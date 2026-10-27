@@ -4,12 +4,13 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-SCRIPT_DIR = "/home/miha/000"
+# Динамическое определение директории (работает и локально, и на GitHub)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, "formatted_news.txt")
 
-# НАСТРОЙКИ TELEGRAM
-TELEGRAM_BOT_TOKEN = "8688585593:AAHOX-mYPT_955sZ9utjb_oB0-bsOJwCjl4"
-CHANNEL_ID = "@https://t.me/nhlbot1" # Например: @nhl_news_channel
+# НАСТРОЙКИ TELEGRAM (из секретов GitHub Actions)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
 
 POSITIONS_MAP = {
     "center": "C",
@@ -72,6 +73,10 @@ def translate_status(text_lower, full_text):
     return "изменение статуса"
 
 def send_to_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
+        print("[Ошибка]: TELEGRAM_BOT_TOKEN или TELEGRAM_CHANNEL_ID не заданы!")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHANNEL_ID,
@@ -87,7 +92,7 @@ def send_to_telegram(message):
 
 def parse_daily_faceoff():
     print("================================================================================")
-    print("      ПАРСЕР С АВТОМАТИЧЕСКОЙ ОТПРАВКОЙ В TELEGRAM (/home/miha/000)            ")
+    print("      ПАРСЕР С АВТОМАТИЧЕСКОЙ ОТПРАВКОЙ В TELEGRAM                            ")
     print("================================================================================")
 
     os.makedirs(SCRIPT_DIR, exist_ok=True)
@@ -117,7 +122,7 @@ def parse_daily_faceoff():
 
     count = 0
     for article in articles:
-        if count >= 10:  # Берем последние 10 свежих новостей за раз
+        if count >= 10:
             break
 
         full_text = article.get_text(separator=" ", strip=True)
@@ -181,7 +186,6 @@ def parse_daily_faceoff():
 
         if formatted_post not in new_posts:
             new_posts.append(formatted_post)
-            # Сразу отправляем в Telegram при нахождении
             send_to_telegram(formatted_post)
             count += 1
 
