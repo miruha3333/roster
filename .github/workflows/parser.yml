@@ -2,7 +2,6 @@ name: NHL News Parser
 
 on:
   schedule:
-    # Запуск каждый час
     - cron: '0 * * * *'
   workflow_dispatch: # Кнопка ручного запуска на сайте GitHub
 
@@ -10,7 +9,7 @@ jobs:
   run-parser:
     runs-on: ubuntu-latest
     
-    # ВАЖНО: Разрешаем GitHub Actions записывать изменения в репозиторий
+    # Разрешаем GitHub Actions записывать изменения в репозиторий
     permissions:
       contents: write
 
@@ -42,3 +41,4 @@ jobs:
         with:
           commit_message: "Auto-update sent_news.db [skip ci]"
           file_pattern: "sent_news.db"
+          add_options: '-f'  # Принудительно индексирует и сохраняет файл базы
