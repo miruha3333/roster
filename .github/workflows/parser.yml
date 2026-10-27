@@ -1,10 +1,9 @@
 name: NHL News Watcher
 
 on:
-  schedule:
-    # Запускаем каждые 15 минут для оперативного контроля
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
+  workflow_dispatch: # Ручной запуск из интерфейса
+  repository_dispatch: # Запуск по сигналу от внешнего Cron-сервиса
+    types: [run-watcher]
 
 jobs:
   watch-and-parse:
