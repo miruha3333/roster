@@ -2,13 +2,18 @@ name: NHL News Parser
 
 on:
   schedule:
-    # Запуск каждый час (можете изменить под себя)
+    # Запуск каждый час
     - cron: '0 * * * *'
-  workflow_dispatch: # Позволяет запускать парсер вручную кнопкой с сайта
+  workflow_dispatch: # Кнопка ручного запуска на сайте GitHub
 
 jobs:
   run-parser:
     runs-on: ubuntu-latest
+    
+    # ВАЖНО: Разрешаем GitHub Actions записывать изменения в репозиторий
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,3 +36,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
         run: python pars.py
+
+      - name: Commit and push updated database
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Auto-update sent_news.db [skip ci]"
+          file_pattern: "sent_news.db"
