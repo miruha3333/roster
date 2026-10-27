@@ -1,15 +1,15 @@
-name: NHL News Parser
+name: NHL News Watcher & Parser
 
 on:
   schedule:
+    # Запуск каждый час (watcher проверяет наличие новостей)
     - cron: '0 * * * *'
-  workflow_dispatch: # Кнопка ручного запуска на сайте GitHub
+  workflow_dispatch: # Кнопка ручного запуска на сайте
 
 jobs:
-  run-parser:
+  check-and-parse:
     runs-on: ubuntu-latest
     
-    # Разрешаем GitHub Actions записывать изменения в репозиторий
     permissions:
       contents: write
 
@@ -30,7 +30,7 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium
 
-      - name: Run parser script
+      - name: Run watcher and parser
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
@@ -41,4 +41,4 @@ jobs:
         with:
           commit_message: "Auto-update sent_news.db [skip ci]"
           file_pattern: "sent_news.db"
-          add_options: '-f'  # Принудительно индексирует и сохраняет файл базы
+          add_options: '-f'
