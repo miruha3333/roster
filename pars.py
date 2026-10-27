@@ -1,14 +1,16 @@
 import os
 import re
+import sqlite3
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-# Динамическое определение директории (работает и локально, и на GitHub)
+# Динамическое определение пути к файлам
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, "formatted_news.txt")
+DB_FILE = os.path.join(SCRIPT_DIR, "sent_news.db")
 
-# НАСТРОЙКИ TELEGRAM (из секретов GitHub Actions)
+# Чтение секретов
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
 
@@ -29,6 +31,40 @@ NHL_TEAMS = [
     "Tampa Bay Lightning", "Toronto Maple Leafs", "Utah Hockey Club", "Vancouver Canucks", "Vegas Golden Knights",
     "Washington Capitals", "Winnipeg Jets"
 ]
+
+def init_db():
+    """Создание таблицы в базе данных"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sent_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_hash TEXT UNIQUE
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def is_post_sent(post_hash):
+    """Проверка наличия поста в базе"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM sent_posts WHERE post_hash = ?', (post_hash,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+def save_sent_post(post_hash):
+    """Сохранение поста в базу"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('INSERT INTO sent_posts (post_hash) VALUES (?)', (post_hash,))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass
+    finally:
+        conn.close()
 
 def translate_status(text_lower, full_text):
     if "upper-body" in text_lower or "upper body" in text_lower:
@@ -92,11 +128,12 @@ def send_to_telegram(message):
 
 def parse_daily_faceoff():
     print("================================================================================")
-    print("      ПАРСЕР С АВТОМАТИЧЕСКОЙ ОТПРАВКОЙ В TELEGRAM                            ")
+    print("      ПАРСЕР С ЗАЩИТОЙ ОТ ДУБЛИКАТОВ ЧЕРЕЗ БД (SQLite)                        ")
     print("================================================================================")
 
+    init_db()
     os.makedirs(SCRIPT_DIR, exist_ok=True)
-    new_posts = []
+    new_posts_sent = 0
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
@@ -120,11 +157,7 @@ def parse_daily_faceoff():
     articles = soup.find_all('article')
     print(f"Найдено блоков <article>: {len(articles)}")
 
-    count = 0
     for article in articles:
-        if count >= 10:
-            break
-
         full_text = article.get_text(separator=" ", strip=True)
         text_lower = full_text.lower()
 
@@ -182,14 +215,19 @@ def parse_daily_faceoff():
             continue
 
         status_reason = translate_status(text_lower, full_text)
-        formatted_post = f"<b>{player_name}</b> {team_eng} {pos_abbr} <b>{status_reason}</b>"
+        
+        # Уникальный ключ для базы
+        post_unique_id = f"{player_name}_{team_eng}_{pos_abbr}_{status_reason}".lower()
 
-        if formatted_post not in new_posts:
-            new_posts.append(formatted_post)
+        # Если поста нет в базе — отправляем и сохраняем
+        if not is_post_sent(post_unique_id):
+            formatted_post = f"<b>{player_name}</b> {team_eng} {pos_abbr} <b>{status_reason}</b>"
             send_to_telegram(formatted_post)
-            count += 1
+            save_sent_post(post_unique_id)
+            new_posts_sent += 1
+            print(f"[Новый пост]: {player_name} - {status_reason}")
 
-    print(f"\n[Успех] Обработано и отправлено постов: {len(new_posts)}")
+    print(f"\n[Успех] Новых постов отправлено: {new_posts_sent}")
 
 if __name__ == "__main__":
     parse_daily_faceoff()
