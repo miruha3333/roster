@@ -1,55 +1,78 @@
-name: NHL News Parser Workflow
+import os
+import sqlite3
+import sys
+import subprocess
+import requests
+from bs4 import BeautifulSoup
 
-on:
-  repository_dispatch:
-    types: [run-watcher]
-  workflow_dispatch:
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(SCRIPT_DIR, "sent_news.db")
+URL = "https://www.dailyfaceoff.com/hockey-player-news"
 
-concurrency:
-  group: nhl-parser-${{ github.ref }}
-  cancel-in-progress: true
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sent_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_hash TEXT UNIQUE
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-jobs:
-  run-watcher-and-parser:
-    runs-on: ubuntu-latest
+def is_hash_in_db(post_hash):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM sent_posts WHERE post_hash = ?', (post_hash,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
 
-    permissions:
-      contents: write
+def check_for_new_data():
+    init_db()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    }
 
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    print("[Watcher] Быстрая проверка ленты...")
+    try:
+        response = requests.get(URL, headers=headers, timeout=10)
+        if response.status_code != 200:
+            print(f"[Watcher] Ошибка сайта: {response.status_code}")
+            return True
+    except Exception as e:
+        print(f"[Watcher] Ошибка запроса: {e}")
+        return True
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    soup = BeautifulSoup(response.text, 'html.parser')
+    articles = soup.find_all('article')
+    
+    if not articles:
+        return True
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 playwright
-          playwright install chromium
+    top_article = articles[0]
+    raw_text = top_article.get_text(separator=" ", strip=True)
 
-      - name: Run Watcher
-        run: |
-          python watcher.py
+    if not raw_text or len(raw_text) < 15:
+        return False
 
-      # Подтягиваем последние изменения веток перед коммитом базы
-      - name: Pull latest changes
-        if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull origin main --rebase || true
+    import hashlib
+    top_hash = hashlib.md5(raw_text.encode('utf-8')).hexdigest()
 
-      - name: Commit and push updated database
-        if: always()
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Auto-update sent_news.db [skip ci]"
-          file_pattern: "sent_news.db"
-          add_options: '-f'
-          push_options: '--force'
+    if not is_hash_in_db(top_hash):
+        print(f"[Watcher] Обнаружена новая свежая запись! (Хэш: {top_hash[:8]})")
+        return True
+
+    return False
+
+if __name__ == "__main__":
+    found_new = check_for_new_data()
+    
+    if found_new:
+        print("[Watcher] Запуск основного парсера pars.py...")
+        result = subprocess.run([sys.executable, os.path.join(SCRIPT_DIR, "pars.py")])
+        sys.exit(result.returncode)
+    else:
+        print("[Watcher] Новых записей нет. Выход (2 сек).")
+        sys.exit(0)
