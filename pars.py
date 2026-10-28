@@ -66,44 +66,68 @@ def save_sent_post(post_hash):
     finally:
         conn.close()
 
-def translate_status(text_lower, full_text):
-    if "upper-body" in text_lower or "upper body" in text_lower:
-        return "травма (верхняя часть тела)"
-    elif "lower-body" in text_lower or "lower body" in text_lower:
-        return "травма (нижняя часть тела)"
-    elif "concussion" in text_lower or "protocol" in text_lower:
-        return "сотрясение"
-    elif "illness" in text_lower:
-        return "болезнь"
-    elif "hand" in text_lower and "fracture" in text_lower:
+def translate_status(text_lower, full_text=""):
+    # Используем полный исходный текст для поиска точных фраз с сохранением регистра (или переведенный в нижний)
+    t_lower = text_lower
+
+    # 1. Точные фразы для стартовых вратарей
+    if "will start" in t_lower or "in the starter's crease" in t_lower or "starter's crease" in t_lower or "is in the starter's crease" in t_lower:
+        return "стартовый голкипер"
+
+    # 2. Точные фразы для травм и медицинских статусов
+    elif "upper-body injury" in t_lower or "upper body injury" in t_lower:
+        return "травма верхней части тела"
+    elif "lower-body injury" in t_lower or "lower body injury" in t_lower:
+        return "травма нижней части тела"
+    elif "concussion protocol" in t_lower:
+        return "протокол сотрясения мозга"
+    elif "miss time with an illness" in t_lower or "out with an illness" in t_lower:
+        return "пропустит матч из-за болезни"
+    elif "hand fracture" in t_lower or "fractured hand" in t_lower:
         return "перелом руки"
-    elif "shoulder" in text_lower:
+    elif "shoulder injury" in t_lower:
         return "травма плеча"
-    elif "placed on ir" in text_lower:
+    elif "placed on injured reserve" in t_lower or "placed on ir" in t_lower:
         return "помещен в список травмированных (IR)"
-    elif "surgery" in text_lower or "appendectomy" in text_lower:
+    elif "underwent surgery" in t_lower or "had surgery" in t_lower:
         return "перенес операцию"
-    elif "reassigned to" in text_lower or "assigned to" in text_lower:
-        return "отправлен в фарм-клуб"
-    elif "loaned to" in text_lower:
-        return "отдан в аренду в фарм-клуб"
-    elif "recalled" in text_lower:
-        return "вызван из фарм-клуба"
-    elif "healthy scratch" in text_lower:
-        return "останется в запасе"
-    elif "returned to practice" in text_lower or "returns to practice" in text_lower or "was at practice" in text_lower or "practiced" in text_lower:
+
+    # 3. Фразы про бедро и сроки восстановления (как в вашем примере с Ducks)
+    elif "is hopeful to join" in t_lower and "workouts" in t_lower:
+        return "надеется вернуться к тренировкам в ближайшее время"
+    elif "hip injury" in t_lower or "hip issue" in t_lower:
+        return "травма бедра"
+
+    # 4. Неразглашаемые травмы с возможностью сыграть
+    elif "undisclosed injury" in t_lower and "option to play" in t_lower:
+        return "травма (характер не разглашается), но может сыграть"
+    elif "undisclosed injury" in t_lower or "undisclosed issue" in t_lower:
+        return "травма (характер не разглашается)"
+
+    # 5. Движение по составу и фарм-клубам
+    elif "reassigned to the AHL" in t_lower or "assigned to the AHL" in t_lower:
+        return "отправлен в АХЛ"
+    elif "loaned to" in t_lower:
+        return "отдан в аренду"
+    elif "recalled from the AHL" in t_lower or "recalled from ahl" in t_lower:
+        return "вызван из АХЛ"
+    elif "will be a healthy scratch" in t_lower or "healthy scratch" in t_lower:
+        return "останется в запасе (healthy scratch)"
+
+    # 6. Возвращение в строй и тренировки
+    elif "returned to practice" in t_lower or "returns to practice" in t_lower:
         return "вернулся к тренировкам"
-    elif "will be back" in text_lower or "return to the lineup" in text_lower or "draw back into the lineup" in text_lower or "expected to return" in text_lower:
+    elif "expected to return to the lineup" in t_lower or "return to the lineup" in t_lower:
         return "вернется в состав"
-    elif "game-time decision" in text_lower:
-        return "решение перед матчем"
-    elif "will not play" in text_lower or "out" in text_lower:
+    elif "game-time decision" in t_lower:
+        return "решение по участию будет принято перед матчем"
+
+    # 7. Пропуск матчей и сроки
+    elif "will not play" in t_lower or "ruled out for" in t_lower:
         return "пропустит матч"
-    elif "warmups" in text_lower or "led the" in text_lower or "skate" in text_lower:
-        return "участвует в разминке / готовится к матчу"
-    elif "day-to-day" in text_lower:
+    elif "considered day-to-day" in t_lower or "listed as day-to-day" in t_lower:
         return "день за днем (day-to-day)"
-    elif "week-to-week" in text_lower:
+    elif "considered week-to-week" in t_lower or "listed as week-to-week" in t_lower:
         return "неделя за неделей (week-to-week)"
 
     return "изменение статуса"
