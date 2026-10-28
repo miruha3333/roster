@@ -37,6 +37,14 @@ jobs:
         run: |
           python watcher.py
 
+      # Подтягиваем последние изменения веток перед коммитом базы
+      - name: Pull latest changes
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull origin main --rebase || true
+
       - name: Commit and push updated database
         if: always()
         uses: stefanzweifel/git-auto-commit-action@v5
