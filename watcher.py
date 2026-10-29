@@ -1,7 +1,5 @@
 import os
 import sqlite3
-import sys
-import subprocess
 import requests
 from bs4 import BeautifulSoup
 import hashlib
@@ -69,10 +67,16 @@ def check_for_new_data():
 if __name__ == "__main__":
     found_new = check_for_new_data()
     
+    # Передаем результат в GitHub Actions через GITHUB_OUTPUT
+    github_output = os.getenv('GITHUB_OUTPUT')
+    
     if found_new:
-        print("[Watcher] Запуск основного парсера pars.py...")
-        result = subprocess.run([sys.executable, os.path.join(SCRIPT_DIR, "pars.py")])
-        sys.exit(result.returncode)
+        print("[Watcher] Есть новые данные. Даем сигнал на запуск парсера.")
+        if github_output:
+            with open(github_output, "a") as f:
+                f.write("new_news=true\n")
     else:
-        print("[Watcher] Новых записей нет. Выход (2 сек).")
-        sys.exit(0)
+        print("[Watcher] Новых записей нет. Завершаем работу за пару секунд.")
+        if github_output:
+            with open(github_output, "a") as f:
+                f.write("new_news=false\n")
