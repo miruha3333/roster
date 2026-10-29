@@ -32,6 +32,16 @@ NHL_TEAMS = [
     "Washington Capitals", "Winnipeg Jets"
 ]
 
+DAYS_MAP = {
+    "monday": "в понедельник",
+    "tuesday": "во вторник",
+    "wednesday": "в среду",
+    "thursday": "в четверг",
+    "friday": "в пятницу",
+    "saturday": "в субботу",
+    "sunday": "в воскресенье"
+}
+
 def init_db():
     """Создание таблицы в базе данных"""
     conn = sqlite3.connect(DB_FILE)
@@ -55,7 +65,7 @@ def is_post_sent(post_hash):
     return row is not None
 
 def save_sent_post(post_hash):
-    """Сохранение поста в базу"""
+    """Сохранение поста в базе"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     try:
@@ -67,8 +77,40 @@ def save_sent_post(post_hash):
         conn.close()
 
 def translate_status(text_lower, full_text=""):
-    # Используем полный исходный текст для поиска точных фраз с сохранением регистра (или переведенный в нижний)
     t_lower = text_lower
+
+    # 0. Новые точные шаблоны из ваших примеров
+    # Травма по ходу матча и не возвращение
+    if "left" in t_lower and ("game" in t_lower or "match" in t_lower) and "will not return" in t_lower:
+        if "lower-body" in t_lower or "lower body" in t_lower:
+            return "травма нижней части тела"
+        elif "upper-body" in t_lower or "upper body" in t_lower:
+            return "травма верхней части тела"
+        return "получил травму по ходу матча и не вернется на лед"
+
+    # Раскатка вратарей (вероятно, будет стартовым голкипером)
+    if "led" in t_lower and "onto the ice for warmups" in t_lower:
+        return "вероятно, будет стартовым голкипером"
+
+    # Перевод возвращения в состав по дням недели (например, "will be back in the ... lineup on Wednesday")
+    for eng_day, rus_day in DAYS_MAP.items():
+        if f"lineup on {eng_day}" in t_lower or f"return to the lineup on {eng_day}" in t_lower or f"back in the" in t_lower and eng_day in t_lower:
+            return f"вернется в состав {rus_day}"
+
+    # Возвращение в состав общая
+    if "will be back in the" in t_lower and "lineup" in t_lower:
+        return "возвращается в состав"
+    if "will join the" in t_lower and "lineup" in t_lower:
+        return "будет введен в основной состав"
+
+    # Перевод перевода в фарм-клуб (AHL) с извлечением названия команды
+    if "reassigned to" in t_lower or "loaned to" in t_lower:
+        # Пытаемся найти название клуба перед (AHL) или в конце строки
+        match = re.search(r'(?:reassigned to|loaned to)\s+([A-Za-z\s\-\/\.]+?)(?:\s*\(ahl\)|\.|$)', full_text, re.IGNORECASE)
+        if match:
+            team_ahl = match.group(1).strip()
+            return f"отправлен в {team_ahl} (AHL)"
+        return "отправлен в фарм-клуб (AHL)"
 
     # 1. Точные фразы для стартовых вратарей
     if "will start" in t_lower or "in the starter's crease" in t_lower or "starter's crease" in t_lower or "is in the starter's crease" in t_lower:
@@ -79,8 +121,8 @@ def translate_status(text_lower, full_text=""):
         return "травма верхней части тела"
     elif "lower-body injury" in t_lower or "lower body injury" in t_lower:
         return "травма нижней части тела"
-    elif "concussion protocol" in t_lower:
-        return "протокол сотрясения мозга"
+    elif "concussion protocol" in t_lower or "concussion" in t_lower:
+        return "протокол сотрясения мозга / травма головы"
     elif "miss time with an illness" in t_lower or "out with an illness" in t_lower:
         return "пропустит матч из-за болезни"
     elif "hand fracture" in t_lower or "fractured hand" in t_lower:
@@ -92,7 +134,7 @@ def translate_status(text_lower, full_text=""):
     elif "underwent surgery" in t_lower or "had surgery" in t_lower:
         return "перенес операцию"
 
-    # 3. Фразы про бедро и сроки восстановления (как в вашем примере с Ducks)
+    # 3. Фразы про бедро и сроки восстановления
     elif "is hopeful to join" in t_lower and "workouts" in t_lower:
         return "надеется вернуться к тренировкам в ближайшее время"
     elif "hip injury" in t_lower or "hip issue" in t_lower:
@@ -134,7 +176,7 @@ def translate_status(text_lower, full_text=""):
 
 def send_to_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not CHANNEL_ID:
-        print("[Ошибка]: TELEGRAM_BOT_TOKEN или TELEGRAM_CHANNEL_ID не заданы!")
+        print("[Ошибка]: TELEGRAM_BOT_TOKEN или CHANNEL_ID не заданы!")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
