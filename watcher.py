@@ -21,24 +21,14 @@ def init_db():
     conn.commit()
     conn.close()
 
-def is_hash_in_db(post_hash):
+def get_latest_stored_hash():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT id FROM sent_posts WHERE post_hash = ?', (post_hash,))
+    # Берем самый последний добавленный хэш из базы
+    cursor.execute('SELECT post_hash FROM sent_posts ORDER BY id DESC LIMIT 1')
     row = cursor.fetchone()
     conn.close()
-    return row is not None
-
-def save_hash_to_db(post_hash):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    try:
-        cursor.execute('INSERT OR IGNORE INTO sent_posts (post_hash) VALUES (?)', (post_hash,))
-        conn.commit()
-    except Exception as e:
-        print(f"[Watcher] Ошибка сохранения хэша в БД: {e}")
-    finally:
-        conn.close()
+    return row[0] if row else None
 
 def check_for_new_data():
     init_db()
@@ -62,27 +52,29 @@ def check_for_new_data():
     if not articles:
         return False
 
-    # Берем самый верхний пост
+    # Берем самый верхний пост на сайте
     top_article = articles[0]
     raw_text = top_article.get_text(separator=" ", strip=True)
 
     if not raw_text or len(raw_text) < 15:
         return False
 
-    # Убираем динамические таймстампы (минуты/часы назад), оставляя суть новости
+    # Убираем динамические таймстампы
     clean_text = re.sub(r'\b(\d+\s*(m|h|d|min|hr|hour|ago|мин|час|д назад))\b', '', raw_text, flags=re.IGNORECASE)
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
-    top_hash = hashlib.md5(clean_text.encode('utf-8')).hexdigest()
+    current_top_hash = hashlib.md5(clean_text.encode('utf-8')).hexdigest()
+    last_stored_hash = get_latest_stored_hash()
 
-    # Проверяем в базе
-    if not is_hash_in_db(top_hash):
-        print(f"[Watcher] Обнаружена реально новая запись! (Хэш: {top_hash[:8]})")
-        # ВАЖНО: Сразу сохраняем хэш в базу, чтобы больше не триггерить повторно
-        save_hash_to_db(top_hash)
+    print(f"[Watcher] Текущий хэш верхушки сайта: {current_top_hash[:8]}")
+    print(f"[Watcher] Последний сохраненный в базе хэш: {last_stored_hash[:8] if last_stored_hash else 'Отсутствует'}")
+
+    # Если хэш изменился по сравнению с тем, что в базе — значит, сверху появилась новая запись!
+    if current_top_hash != last_stored_hash:
+        print("[Watcher] Обнаружено изменение! Верхушка ленты отличается от базы.")
         return True
 
-    print("[Watcher] Изменений нет (новость уже обрабатывалась).")
+    print("[Watcher] Верхушка ленты не изменилась. Новостей нет.")
     return False
 
 if __name__ == "__main__":
@@ -91,12 +83,10 @@ if __name__ == "__main__":
     github_output = os.getenv('GITHUB_OUTPUT')
     
     if found_new:
-        print("[Watcher] Есть новые данные. Даем сигнал на запуск парсера.")
         if github_output:
             with open(github_output, "a") as f:
                 f.write("new_news=true\n")
     else:
-        print("[Watcher] Новых записей нет. Завершаем работу за пару секунд.")
         if github_output:
             with open(github_output, "a") as f:
                 f.write("new_news=false\n")
