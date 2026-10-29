@@ -4,6 +4,7 @@ import sys
 import subprocess
 import requests
 from bs4 import BeautifulSoup
+import hashlib
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(SCRIPT_DIR, "sent_news.db")
@@ -37,7 +38,7 @@ def check_for_new_data():
 
     print("[Watcher] Быстрая проверка ленты...")
     try:
-        response = requests.get(URL, headers=headers, timeout=10)
+        response = requests.get(URL, headers=headers, timeout=5)
         if response.status_code != 200:
             print(f"[Watcher] Ошибка сайта: {response.status_code}")
             return True
@@ -57,7 +58,6 @@ def check_for_new_data():
     if not raw_text or len(raw_text) < 15:
         return False
 
-    import hashlib
     top_hash = hashlib.md5(raw_text.encode('utf-8')).hexdigest()
 
     if not is_hash_in_db(top_hash):
