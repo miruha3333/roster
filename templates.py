@@ -1,213 +1,208 @@
 import re
-from config import POSITIONS, DAYS_TRANSLATE, INJURIES_TRANSLATE
 
-def clean_days(text: str) -> str:
-    for en, ru in DAYS_TRANSLATE.items():
-        text = re.sub(rf"\b{en}\b", ru, text, flags=re.IGNORECASE)
-    return text
+# Краткие латинские обозначения позиций, как в ваших примерах: (D), (C), (LW), (RW), (G)
+SHORT_POSITIONS = {
+    "Defenseman": "D", "defense": "D", "d": "D",
+    "Center": "C", "c": "C",
+    "Left Wing": "LW", "left wing": "LW", "lw": "LW",
+    "Right Wing": "RW", "right wing": "RW", "rw": "RW",
+    "Forward": "F", "forward": "F", "f": "F",
+    "Goalie": "G", "goalie": "G", "g": "G"
+}
 
-def clean_injury(text: str) -> str:
-    for en, ru in INJURIES_TRANSLATE.items():
-        text = re.sub(rf"\b{en}\b", ru, text, flags=re.IGNORECASE)
-    return text
+# Словарь для перевода названий клубов соперников на полный вид
+TEAMS_CLEAN = {
+    "anaheim": "Anaheim Ducks", "ducks": "Anaheim Ducks",
+    "boston": "Boston Bruins", "bruins": "Boston Bruins",
+    "buffalo": "Buffalo Sabres", "sabres": "Buffalo Sabres",
+    "calgary": "Calgary Flames", "flames": "Calgary Flames",
+    "carolina": "Carolina Hurricanes", "hurricanes": "Carolina Hurricanes",
+    "chicago": "Chicago Blackhawks", "blackhawks": "Chicago Blackhawks",
+    "colorado": "Colorado Avalanche", "avalanche": "Colorado Avalanche",
+    "columbus": "Columbus Blue Jackets", "blue jackets": "Columbus Blue Jackets",
+    "dallas": "Dallas Stars", "stars": "Dallas Stars",
+    "detroit": "Detroit Red Wings", "red wings": "Detroit Red Wings",
+    "edmonton": "Edmonton Oilers", "oilers": "Edmonton Oilers",
+    "florida": "Florida Panthers", "panthers": "Florida Panthers",
+    "los angeles": "Los Angeles Kings", "kings": "Los Angeles Kings",
+    "minnesota": "Minnesota Wild", "wild": "Minnesota Wild",
+    "montreal": "Montreal Canadiens", "canadiens": "Montreal Canadiens",
+    "nashville": "Nashville Predators", "predators": "Nashville Predators",
+    "new jersey": "New Jersey Devils", "devils": "New Jersey Devils",
+    "islanders": "New York Islanders", "ny islanders": "New York Islanders",
+    "rangers": "New York Rangers", "ny rangers": "New York Rangers",
+    "ottawa": "Ottawa Senators", "senators": "Ottawa Senators",
+    "philadelphia": "Philadelphia Flyers", "flyers": "Philadelphia Flyers",
+    "pittsburgh": "Pittsburgh Penguins", "penguins": "Pittsburgh Penguins",
+    "san jose": "San Jose Sharks", "sharks": "San Jose Sharks",
+    "seattle": "Seattle Kraken", "kraken": "Seattle Kraken",
+    "st louis": "St. Louis Blues", "st. louis": "St. Louis Blues", "blues": "St. Louis Blues",
+    "tampa bay": "Tampa Bay Lightning", "lightning": "Tampa Bay Lightning",
+    "toronto": "Toronto Maple Leafs", "maple leafs": "Toronto Maple Leafs",
+    "utah": "Utah Mammoth", "mammoth": "Utah Mammoth",
+    "vancouver": "Vancouver Canucks", "canucks": "Vancouver Canucks",
+    "vegas": "Vegas Golden Knights", "golden knights": "Vegas Golden Knights",
+    "washington": "Washington Capitals", "capitals": "Washington Capitals",
+    "winnipeg": "Winnipeg Jets", "jets": "Winnipeg Jets"
+}
 
-# 1. КОНТРАКТЫ (SIGNING)
-def format_signing(player: str, pos: str, team: str, text: str) -> str:
-    # Пример: 1-year, $850,000 contract with the New York Rangers. Expires 2027 (UFA).
-    contract_match = re.search(r"(\d+)-year,\s*(\$[\d,]+)\s*contract.*?Expires\s*(\d{4})\s*\(([A-Z]+)\)", text, re.IGNORECASE)
-    if contract_match:
-        years, amount, expires, status = contract_match.groups()
-        return (
-            f"✍️ <b>НОВЫЙ КОНТРАКТ</b>\n\n"
-            f"«{team}» подписали {pos.lower()}а <b>{player}</b>.\n\n"
-            f"💰 <b>Срок и сумма:</b> {years} г. / {amount}\n"
-            f"⏳ <b>Действует до:</b> {expires} ({status})"
-        )
-    
-    # Пример: The Kings have signed Jared Wright to a two-year contract worth $925K AAV.
-    aav_match = re.search(r"signed .+? to a (.+?) contract worth (.+? AAV)", text, re.IGNORECASE)
-    if aav_match:
-        term, aav = aav_match.groups()
-        return (
-            f"✍️ <b>НОВЫЙ КОНТРАКТ</b>\n\n"
-            f"«{team}» подписали соглашение с <b>{player}</b> ({pos}).\n"
-            f"💰 <b>Условия:</b> {term} ({aav})."
-        )
-    return None
+DAYS_MAP = {
+    "sunday": "в воскресенье", "monday": "в понедельник", "tuesday": "во вторник",
+    "wednesday": "в среду", "thursday": "в четверг", "friday": "в пятницу",
+    "saturday": "в субботу", "today": "сегодня", "tonight": "сегодня ночью"
+}
 
-# 2. ОБМЕНЫ (TRADE)
-def format_trade(player: str, pos: str, team: str, text: str) -> str:
-    # Пример: The Devils have acquired Connor Hellebuyck from the Jets for Dawson Mercer, Nico Daws...
-    trade_match = re.search(r"(?:The\s+)?(.+?)\s+have acquired\s+(.+?)\s+from\s+(?:the\s+)?(.+?)\s+for\s+(.+?)(?:\.|$)", text, re.IGNORECASE)
-    if trade_match:
-        to_team, acquired, from_team, package = trade_match.groups()
-        return (
-            f"🔄 <b>ОБМЕН В НХЛ</b>\n\n"
-            f"«{to_team.strip()}» выменяли у «{from_team.strip()}»:\n"
-            f"📥 <b>{acquired.strip()}</b>\n\n"
-            f"Взамен в «{from_team.strip()}» отправляются:\n"
-            f"📤 <b>{package.strip()}</b>"
-        )
-    return None
+INJURIES_MAP = {
+    "upper-body": "верхняя часть тела", "upper body": "верхняя часть тела",
+    "lower-body": "нижняя часть тела", "lower body": "нижняя часть тела",
+    "undisclosed": "не раскрывается", "illness": "болезнь",
+    "knee": "колено", "hip": "бедро", "groin": "пах", "shoulder": "плечо"
+}
 
-# 3. ДРАФТ ОТКАЗОВ (WAIVER MOVE)
-def format_waiver(player: str, pos: str, team: str, text: str) -> str:
-    # Забор с драфта отказов: Minnesota has claimed Cameron Crotty off of waivers from Ottawa.
-    claim_match = re.search(r"(.+?)\s+has claimed\s+(.+?)\s+off (?:of )?waivers from\s+(.+?)(?:\.|$)", text, re.IGNORECASE)
-    if claim_match:
-        claimer, who, from_who = claim_match.groups()
-        return (
-            f"📋 <b>ЗАБОР С ДРАФТА ОТКАЗОВ</b>\n\n"
-            f"«{claimer.strip()}» забрали с уэйвера {pos.lower()}а <b>{who.strip()}</b> у «{from_who.strip()}»."
-        )
+def get_day(text: str) -> str:
+    """Определяет день недели из текста"""
+    lower = text.lower()
+    for en, ru in DAYS_MAP.items():
+        if re.search(rf"\b{en}\b", lower):
+            return ru
+    return "в ближайшем матче"
 
-    # Расторжение контракта: is being placed on unconditional waivers for a contract termination
-    if "unconditional waivers" in text.lower():
-        return (
-            f"❌ <b>РАСТОРЖЕНИЕ КОНТРАКТА</b>\n\n"
-            f"«{team}» поместили {pos.lower()}а <b>{player}</b> на безусловный драфт отказов с целью расторжения соглашения."
-        )
+def get_opponent(text: str) -> str:
+    """Ищет соперника после предлогов vs., in, against, at"""
+    lower = text.lower()
+    match = re.search(r"(?:vs\.?|against|in|at)\s+(?:the\s+)?([a-z\s\.\-]+)", lower)
+    if match:
+        raw_opp = match.group(1).strip().rstrip(".,")
+        for key, full_team in TEAMS_CLEAN.items():
+            if key in raw_opp:
+                return full_team
+    return ""
 
-    # Успешный проход уэйвера
-    if "cleared waivers" in text.lower():
-        return (
-            f"✅ <b>ПРОХОЖДЕНИЕ ДРАФТА ОТКАЗОВ</b>\n\n"
-            f"{pos} «{team}» <b>{player}</b> успешно прошёл процедуру уэйвера и отправляется в фарм-клуб."
-        )
+def get_injury_type(text: str) -> str:
+    """Определяет характер травмы из скобок (upper-body и т.д.)"""
+    lower = text.lower()
+    for en, ru in INJURIES_MAP.items():
+        if en in lower:
+            return ru
+    return ""
 
-    # Выставление на уэйвер
-    if "placed" in text.lower() and "on waivers" in text.lower():
-        return (
-            f"⚠️ <b>ВЫСТАВЛЕН НА ДРАФТ ОТКАЗОВ</b>\n\n"
-            f"«{team}» выставили {pos.lower()}а <b>{player}</b> на драфт отказов (waivers)."
-        )
-    return None
-
-# 4. ДВИЖЕНИЕ МЕЖДУ ЛИГАМИ (CALL UP / SEND DOWN)
-def format_roster_move(player: str, pos: str, team: str, text: str, category: str) -> str:
-    # Вызов из АХЛ
-    if category == "Call Up" or "recalled from" in text.lower():
-        farm_match = re.search(r"from (?:the )?(.+?)(?:\s*\(AHL\))?\.", text)
-        farm = farm_match.group(1) if farm_match else "АХЛ"
-        return (
-            f"🚀 <b>ВЫЗОВ ИЗ АХЛ</b>\n\n"
-            f"«{team}» вызвали в основную команду {pos.lower()}а <b>{player}</b> из «{farm}»."
-        )
-
-    # Ссылка в АХЛ / юниоры
-    if category == "Send Down" or "assigned to" in text.lower() or "loaned to" in text.lower() or "reassigned to" in text.lower():
-        dest_match = re.search(r"to (?:the )?(.+?)(?:\s*\((?:AHL|OHL)\))?\.", text)
-        dest = dest_match.group(1) if dest_match else "фарм-клуб"
-        return (
-            f"📦 <b>ОТПРАВКА В ФАРМ-КЛУБ</b>\n\n"
-            f"«{team}» отправили {pos.lower()}а <b>{player}</b> в команду «{dest}»."
-        )
-    return None
-
-# 5. ИЗМЕНЕНИЯ В СОСТАВЕ (LINE CHANGE)
-def format_line_change(player: str, pos: str, team: str, text: str) -> str:
-    text_ru = clean_days(text)
-
-    # Здоровый запас (Healthy Scratch)
-    if "scratched" in text.lower():
-        return (
-            f"🚫 <b>ВНЕ ЗАЯВКИ</b>\n\n"
-            f"{pos} «{team}» <b>{player}</b> останется в запасе (healthy scratch).\n"
-            f"<i>{text_ru}</i>"
-        )
-
-    # Дебют в НХЛ
-    if "nhl debut" in text.lower():
-        return (
-            f"⭐️ <b>ДЕБЮТ В НХЛ!</b>\n\n"
-            f"Молодой {pos.lower()} «{team}» <b>{player}</b> сегодня проведёт свой первый матч в карьере в НХЛ!"
-        )
-
-    # Дебют в сезоне
-    if "season debut" in text.lower():
-        return (
-            f"✨ <b>ДЕБЮТ В СЕЗОНЕ</b>\n\n"
-            f"{pos} «{team}» <b>{player}</b> проведёт свой первый матч в нынешнем сезоне."
-        )
-
-    # Вход в состав
-    if any(k in text.lower() for k in ["enter the lineup", "draw into the lineup", "back in the"]):
-        return (
-            f"🟢 <b>ВОЗВРАЩЕНИЕ В СОСТАВ</b>\n\n"
-            f"{pos} «{team}» <b>{player}</b> возвращается в заявку команды.\n"
-            f"<i>{text_ru}</i>"
-        )
-    return None
-
-# 6. ТРАВМЫ И ВОССТАНОВЛЕНИЕ (INJURY)
-def format_injury(player: str, pos: str, team: str, text: str) -> str:
-    text_ru = clean_days(clean_injury(text))
-
-    # Вывод из списка травмированных (IR)
-    if "activated from ir" in text.lower():
-        return (
-            f"💪 <b>ВОЗВРАЩЕНИЕ В СТРОЙ</b>\n\n"
-            f"{pos} «{team}» <b>{player}</b> активирован из списка травмированных (IR) и готов играть."
-        )
-
-    # Помещение в список травмированных (IR)
-    if "placed on ir" in text.lower() or "placed on injured reserve" in text.lower():
-        return (
-            f"🏥 <b>СПИСОК ТРАВМИРОВАННЫХ (IR)</b>\n\n"
-            f"«{team}» внесли {pos.lower()}а <b>{player}</b> в лазарет команды (Injured Reserve)."
-        )
-
-    # Сроки восстановления (will miss X weeks)
-    weeks_match = re.search(r"will miss (.+?)\.", text_ru, re.IGNORECASE)
-    if weeks_match:
-        return (
-            f"⏱ <b>СРОКИ ВОССТАНОВЛЕНИЯ</b>\n\n"
-            f"{pos} «{team}» <b>{player}</b> пропустит из-за травмы: <b>{weeks_match.group(1)}</b>."
-        )
-
-    # Полноценная тренировка
-    if "full participant at practice" in text.lower():
-        return (
-            f"🏒 <b>ТРЕНИРОВКА В ОБЩЕЙ ГРУППЕ</b>\n\n"
-            f"{pos} «{team}» <b>{player}</b> восстановился после повреждения и тренировался без ограничений."
-        )
-
-    # Выбыл по ходу матча
-    if "left" in text.lower() and "will not return" in text.lower():
-        return (
-            f"🚑 <b>ТРАВМА В МАТЧЕ</b>\n\n"
-            f"{pos} «{team}» <b>{player}</b> получил повреждение в ходе игры и не смог вернуться на лёд."
-        )
-    return None
-
-# ГЛАВНЫЙ СБОРЩИК
 def build_telegram_post(player: str, pos_en: str, team: str, category: str, text: str, source: str) -> str:
-    pos_ru = POSITIONS.get(pos_en, pos_en)
-    
-    # Последовательно проверяем категорию через профильные шаблоны
-    post = None
-    if category == "Signing":
-        post = format_signing(player, pos_ru, team, text)
-    elif category == "Trade":
-        post = format_trade(player, pos_ru, team, text)
-    elif category == "Waiver Move":
-        post = format_waiver(player, pos_ru, team, text)
-    elif category in ["Call Up", "Send Down"]:
-        post = format_roster_move(player, pos_ru, team, text, category)
-    elif category == "Line Change":
-        post = format_line_change(player, pos_ru, team, text)
-    elif category == "Injury":
-        post = format_injury(player, pos_ru, team, text)
+    """
+    Генерирует лаконичные посты строго по новому формату
+    """
+    pos = SHORT_POSITIONS.get(pos_en, "F")
+    clean_text = text.strip()
+    lower = clean_text.lower()
+    day = get_day(clean_text)
+    opp = get_opponent(clean_text)
 
-    # Если шаблон не совпал с деталями — отдаем общий аккуратный пост
-    if not post:
-        post = (
-            f"📢 <b>{category.upper()} | «{team}»</b>\n\n"
-            f"<b>{player}</b> ({pos_ru})\n"
-            f"{clean_days(clean_injury(text))}"
-        )
+    # 1. ВОЗВРАЩЕНИЕ В СТРОЙ (IR ACTIVATED)
+    # Пример: Pavel Mintyukov (D) активирован из списка травмированных
+    if "activated from ir" in lower:
+        return f"{team}\n✅ {player} ({pos}) активирован из списка травмированных"
 
-    if source:
-        post += f"\n\n<i>Источник: {source}</i>"
+    # 2. ПОМЕЩЕНИЕ В СПИСОК ТРАВМИРОВАННЫХ (IR PLACED)
+    # Пример: John Marino (D) внесен в список травмированных
+    if "placed on ir" in lower or "placed" in lower and "injured reserve" in lower:
+        return f"{team}\n🚫 {player} ({pos}) внесен в список травмированных"
+
+    # 3. ОТПРАВКА В ФАРМ-КЛУБ (AHL / JUNIOR)
+    # Пример: Nick Jensen (D) отправлен в San Diego (AHL)
+    if any(k in lower for k in ["assigned", "loaned", "reassigned"]):
+        dest_match = re.search(r"(?:to|at)\s+(?:the\s+)?(.+?)(?:\s*\((?:AHL|OHL)\))?[\.\s]", clean_text)
+        dest = dest_match.group(1).strip() if dest_match else "фарм-клуб"
+        league = "AHL" if "ahl" in lower or "assigned" in lower else "фарм-клуб"
+        return f"{team}\n⬇️ {player} ({pos}) отправлен в {dest} ({league})"
+
+    # 4. ВЫЗОВ ИЗ ФАРМ-КЛУБА
+    # Пример: Ben McCartney (LW) вызван из Tucson (AHL)
+    if "recalled" in lower:
+        farm_match = re.search(r"from\s+(?:the\s+)?(.+?)(?:\s*\(AHL\))?[\.\s]", clean_text)
+        farm = farm_match.group(1).strip() if farm_match else "фарм-клуба"
+        return f"{team}\n🚀 {player} ({pos}) вызван из {farm} (AHL)"
+
+    # 5. СТАРТОВЫЙ ВРАТАРЬ
+    # Пример: Jonas Johansson (G) станет основным вратарем в воскресенье против Anaheim Ducks
+    # Пример: Karel Vejmelka (G) вероятно будет стартовым вратарем
+    if "goalie" in pos_en.lower() or "start" in lower or "onto the ice" in lower:
+        if "led the" in lower or "first goalie off" in lower or "warmup" in lower:
+            return f"{team}\n🥅 {player} ({pos}) вероятно будет стартовым вратарем"
         
-    return post
+        opp_str = f" против {opp}" if opp else ""
+        return f"{team}\n🥅 {player} ({pos}) станет основным вратарем {day}{opp_str}"
+
+    # 6. ТРЕНИРОВКИ / ПРОПУСК ЗАНЯТИЯ
+    # Пример: Matty Beniers (C) пропустил тренировку в воскресенье, но вернется на лед во вторник
+    if "missed" in lower and "practice" in lower:
+        rejoin_day = "скоро"
+        for en, ru in DAYS_MAP.items():
+            if f"on {en}" in lower or f"on {en}/" in lower:
+                rejoin_day = ru
+        return f"{team}\n➖ {player} ({pos}) пропустил тренировку {day}, но вернется на лед {rejoin_day}"
+
+    # 7. ДЕБЮТ В СЕЗОНЕ ИЛИ НХЛ
+    # Пример: Scott Morrow (D) проведёт свой первый матч в нынешнем сезоне в основном составе.
+    if "debut" in lower:
+        if "season debut" in lower:
+            return f"{team}\n❕ {player} ({pos}) проведёт свой первый матч в нынешнем сезоне в основном составе"
+        return f"{team}\n⭐️ {player} ({pos}) проведёт свой дебютный матч в карьере в НХЛ"
+
+    # 8. НЕ СЫГРАЕТ В МАТЧЕ / DAY-TO-DAY / ТРАВМА
+    # Пример: Sean Durzi (D) не сыграет в воскресенье против Edmonton Oilers
+    # Пример: Kailer Yamamoto (RW) травма (верхняя часть тела)
+    if "will not play" in lower or "is day-to-day" in lower:
+        inj_type = get_injury_type(clean_text)
+        if "day-to-day" in lower and inj_type:
+            return f"{team}\n🚫 {player} ({pos}) травма ({inj_type})"
+        
+        opp_str = f" против {opp}" if opp else ""
+        return f"{team}\n⛔ {player} ({pos}) не сыграет {day}{opp_str}"
+
+    # 9. ОБМЕНЫ (TRADE)
+    # Пример: Nashville Predators 🔄 Обменяли Matthew Wood в Seattle Kraken на Shane Wright
+    if "acquired" in lower and "from" in lower and "for" in lower:
+        trade_match = re.search(r"acquired\s+(.+?)\s+from\s+(.+?)\s+for\s+(.+?)[\.\s]", clean_text, re.IGNORECASE)
+        if trade_match:
+            got_player, from_club, gave_away = trade_match.groups()
+            for key, full_team in TEAMS_CLEAN.items():
+                if key in from_club.lower():
+                    from_club = full_team
+                    break
+            return f"{team}\n🔄 Обменяли {gave_away.strip()} в {from_club.strip()} на {got_player.strip()}"
+
+    # 10. ВНЕ СОСТАВА (HEALTHY SCRATCH)
+    # Пример: Michael Bunting (LW) останется в запасе
+    if "scratched" in lower:
+        return f"{team}\n❌ {player} ({pos}) останется в запасе"
+
+    # 11. ДРАФТ ОТКАЗОВ (WAIVER MOVE)
+    # Пример: Minnesota Wild 📋 Забрали с драфта отказов Ottawa Cameron Crotty (D)
+    if "claimed" in lower and "waiver" in lower:
+        claim_match = re.search(r"claimed\s+(.+?)\s+off (?:of )?waivers from\s+(.+?)[\.\s]", clean_text, re.IGNORECASE)
+        if claim_match:
+            who, from_c = claim_match.groups()
+            return f"{team}\n📋 Забрали с драфта отказов у «{from_c.strip()}» {who.strip()} ({pos})"
+        return f"{team}\n📋 {player} ({pos}) забран с драфта отказов"
+
+    if "unconditional waivers" in lower:
+        return f"{team}\n❌ {player} ({pos}) выставлен на драфт отказов для расторжения контракта"
+
+    if "placed on waivers" in lower:
+        return f"{team}\n⚠️ {player} ({pos}) выставлен на драфт отказов (waivers)"
+
+    # 12. ПОДПИСАНИЕ КОНТРАКТА (SIGNING)
+    # Пример: Carolina Hurricanes ✍️ Alexander Nikishin (D) подписал контракт на 1 год ($3,000,000)
+    if "contract" in lower:
+        c_match = re.search(r"(\d+)-year,\s*(\$[\d,]+)", clean_text)
+        if c_match:
+            years, money = c_match.groups()
+            return f"{team}\n✍️ {player} ({pos}) подписал контракт на {years} г. ({money})"
+        return f"{team}\n✍️ {player} ({pos}) подписал новое соглашение с клубом"
+
+    # 13. ВОЗВРАЩЕНИЕ В СОСТАВ
+    # Пример: Noah Juulsen (D) возвращается в состав в субботу
+    if any(k in lower for k in ["enter the lineup", "draw into", "back in the"]):
+        return f"{team}\n🟢 {player} ({pos}) возвращается в состав {day}"
+
+    # Резервный компактный формат
+    return f"{team}\nℹ️ {player} ({pos}) {clean_text}"
