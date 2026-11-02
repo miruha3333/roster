@@ -17,11 +17,23 @@ KNOWN_TEAMS = [
     "Winnipeg Jets", "Free Agent"
 ]
 
+POSITIONS_MAP = {
+    "defenseman": "Defenseman", "defense": "Defenseman", "d": "Defenseman",
+    "forward": "Forward", "f": "Forward",
+    "center": "Center", "c": "Center",
+    "left wing": "Left Wing", "lw": "Left Wing",
+    "right wing": "Right Wing", "rw": "Right Wing",
+    "goalie": "Goalie", "g": "Goalie"
+}
+
+def clean_inline_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
 def fetch_player_news() -> list[dict]:
-    """Скрейпит свежие новости с DailyFaceoff с точным поиском блоков article"""
+    """Универсальный скрейпер карточек DailyFaceoff по DOM-элементам"""
     headers = {
         "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.dailyfaceoff.com/",
     }
@@ -30,112 +42,124 @@ def fetch_player_news() -> list[dict]:
         response = requests.get(DAILYFACEOFF_URL, headers=headers, timeout=15)
         print(f"[*] Статус ответа сайта: {response.status_code}")
         if response.status_code != 200:
-            print(f"[!] Сайт вернул ошибку: {response.status_code}")
             return []
     except Exception as e:
-        print(f"[!] Ошибка подключения к сайту: {e}")
+        print(f"[!] Ошибка запроса: {e}")
         return []
 
     soup = BeautifulSoup(response.text, "html.parser")
-    
-    # 1. Точный поиск указанного вами блока
-    articles = soup.find_all(
-        "article",
-        class_=lambda c: c and "border-gray-200" in c and "flex-col" in c
-    )
-
-    # Если класс немного изменился — ищем любые теги <article>
-    if not articles:
-        articles = soup.find_all("article")
-
+    articles = soup.find_all("article")
     print(f"[*] Найдено блоков <article> на странице: {len(articles)}")
 
     news_items = []
 
-    for art in articles:
-        text_content = art.get_text(separator="\n").strip()
-        lines = [line.strip() for line in text_content.split("\n") if line.strip()]
+    for idx, art in enumerate(articles, start=1):
+        # 1. ПОИСК ИМЕНИ ИГРОКА
+        player_name = ""
+        # Способ А: через ссылку на игрока
+        player_link = art.find("a", href=lambda h: h and ("/players/" in h or "/player/" in h))
+        if player_link and player_link.get_text(strip=True):
+            player_name = clean_inline_text(player_link.get_text())
 
-        if not lines:
-            continue
+        # Способ Б: через заголовки h2, h3, h4 или жирный текст
+        if not player_name:
+            header_tag = art.find(["h2", "h3", "h4", "h5", "strong"])
+            if header_tag:
+                candidate = clean_inline_text(header_tag.get_text())
+                if candidate and len(candidate.split()) <= 4:
+                    player_name = candidate
 
-        # --- А. ИЩЕМ ИГРОКА И ПОЗИЦИЮ ---
-        # Ищем совпадение шаблона вида: "Matty Beniers(Center)" или "Pavel Mintyukov (Defenseman)"
-        player_match = re.search(
-            r"([A-Z][a-zA-Z\.\'\-\s]+?)\s*\((Defenseman|Forward|Center|Left Wing|Right Wing|Goalie)[^\)]*\)",
-            text_content
+        # 2. ПОЛУЧЕНИЕ ВСЕГО ТЕКСТА КАРТОЧКИ ДЛЯ АНАЛИЗА
+        all_text = art.get_text(separator="\n").strip()
+        lines = [clean_inline_text(l) for l in all_text.split("\n") if clean_inline_text(l)]
+
+        # Способ В: если имя всё ещё не найдено — берём первую строку карточки
+        if not player_name and lines:
+            first_line = lines[0]
+            if "(" in first_line:
+                player_name = first_line[:first_line.find("(")].strip()
+            else:
+                player_name = first_line
+
+        # Очищаем имя от случайных скобок амплуа, например "Matty Beniers(Center)" -> "Matty Beniers"
+        if "(" in player_name:
+            player_name = player_name[:player_name.find("(")].strip()
+
+        # 3. ПОИСК ПОЗИЦИИ (Defenseman, Center, Goalie и т.д.)
+        position = "Forward"
+        pos_match = re.search(
+            r"\b(Defenseman|Forward|Center|Left Wing|Right Wing|Goalie|LW|RW|C|D|G)\b",
+            all_text,
+            re.IGNORECASE
         )
-        if not player_match:
-            continue
+        if pos_match:
+            raw_pos = pos_match.group(1).lower()
+            position = POSITIONS_MAP.get(raw_pos, "Forward")
 
-        player_name = player_match.group(1).strip()
-        position = player_match.group(2).strip()
-
-        # --- Б. ИЩЕМ КОМАНДУ ---
+        # 4. ПОИСК КОМАНДЫ
         team = "NHL"
-        # Способ 1: по списку известных команд
         for t in KNOWN_TEAMS:
-            if t in text_content:
+            if t.lower() in all_text.lower():
                 team = t
                 break
-        
-        # Способ 2: по вертикальной черте "| Team Name"
-        if team == "NHL":
-            team_pipe_match = re.search(r"\|\s*([A-Za-z0-9\s\.\-]+)", text_content)
-            if team_pipe_match:
-                candidate = team_pipe_match.group(1).strip().split("\n")[0]
-                if candidate:
-                    team = candidate
 
-        # --- В. ИЩЕМ КАТЕГОРИЮ ---
-        # Категории DailyFaceoff
+        # 5. ПОИСК КАТЕГОРИИ
         cat_match = re.search(
             r"\b(Signing|Trade|Trades|Injury|Line Change|Call Up|Send Down|Roster Moves|Waiver Move|Goalie Start)\b",
-            text_content,
+            all_text,
             re.IGNORECASE
         )
         category = "News"
         if cat_match:
-            raw_cat = cat_match.group(1).title()
-            if raw_cat == "Trades":
+            c = cat_match.group(1).title()
+            if c in ["Trades", "Trade"]:
                 category = "Trade"
-            elif raw_cat == "Roster Moves":
-                category = "Call Up" if "recalled" in text_content.lower() else "Send Down"
+            elif c == "Roster Moves":
+                category = "Call Up" if "recalled" in all_text.lower() else "Send Down"
             else:
-                category = raw_cat
+                category = c
 
-        # --- Г. ИЩЕМ ИСТОЧНИК (SOURCE) ---
+        # 6. ПОИСК ИСТОЧНИКА (SOURCE)
         source = ""
-        source_match = re.search(r"Source:\s*([^\n]+)", text_content, re.IGNORECASE)
+        source_match = re.search(r"Source:\s*([^\n]+)", all_text, re.IGNORECASE)
         if source_match:
             source = source_match.group(1).strip()
-
-        # --- Д. ИЩЕМ ОСНОВНОЙ ТЕКСТ НОВОСТИ ---
-        # 1-й приоритет: текст из абзацев <p> внутри карточки
-        p_tags = art.find_all("p")
-        desc_candidates = [
-            p.get_text().strip() for p in p_tags 
-            if p.get_text().strip() and not p.get_text().strip().startswith("Source:")
-        ]
-
-        if desc_candidates:
-            news_text = " ".join(desc_candidates)
         else:
-            # 2-й приоритет: отсеиваем технические строки и берем смысловой текст
-            desc_lines = []
-            for line in lines:
-                if "Source:" in line or line.startswith("@"):
+            # Ищем отметку твиттера/инсайдера
+            for l in lines:
+                if l.startswith("@") or "GMT" in l:
+                    source = l
                     break
-                if (line != player_name and 
-                    line != category and 
-                    line != team and 
-                    line != "|" and 
-                    not line.startswith(f"{player_name}(")):
-                    desc_lines.append(line)
-            news_text = " ".join(desc_lines)
 
+        # 7. ПОИСК ТЕКСТА САМОЙ НОВОСТИ
+        news_text = ""
+        
+        # Способ А: ищем абзацы <p> внутри карточки
+        p_tags = art.find_all("p")
+        for p in p_tags:
+            p_text = clean_inline_text(p.get_text())
+            if p_text and not p_text.startswith("Source:") and p_text != player_name:
+                news_text += " " + p_text
         news_text = news_text.strip()
+
+        # Способ Б: если <p> не содержал описания, выбираем самое длинное информативное предложение
         if not news_text:
+            candidates = []
+            for l in lines:
+                if (l != player_name and 
+                    l != category and 
+                    l != team and 
+                    l != "|" and 
+                    not l.startswith("Source:") and 
+                    not l.startswith("@") and
+                    len(l) > 15):
+                    candidates.append(l)
+            if candidates:
+                # Берём самое длинное предложение — это и есть текст новости
+                news_text = max(candidates, key=len)
+
+        # Если имя или текст так и не удалось достать — пропускаем брак
+        if not player_name or not news_text:
             continue
 
         news_items.append({
@@ -147,4 +171,5 @@ def fetch_player_news() -> list[dict]:
             "source": source
         })
 
+    print(f"[*] Успешно распознано новостей: {len(news_items)}")
     return news_items
