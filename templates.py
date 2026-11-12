@@ -109,12 +109,24 @@ def get_opponent(text: str) -> str:
     return ""
 
 def get_injury_type(text: str) -> str:
-    """Определяет травму"""
+    """Определяет характер травмы"""
     lower = text.lower()
     for en, ru in INJURIES_MAP.items():
         if en in lower:
             return ru
     return ""
+
+def extract_farm_team(text: str, action: str = "from") -> str:
+    """Точно извлекает полное название фарм-клуба без обрезки слов"""
+    if action == "from":
+        m = re.search(r"from\s+(?:the\s+)?([A-Za-z0-9\s\.\-]+?)(?:\s*\((?:AHL|ECHL|OHL|WHL)\)|[\.\n$])", text, re.I)
+    else:
+        m = re.search(r"(?:to|at|report to)\s+(?:the\s+)?([A-Za-z0-9\s\.\-]+?)(?:\s*\((?:AHL|ECHL|OHL|WHL)\)|[\.\n$])", text, re.I)
+    if m:
+        name = m.group(1).strip()
+        name = re.sub(r"^(loan on|loan to|assignment to)\s+", "", name, flags=re.I)
+        return name
+    return "фарм-клуб"
 
 def filter_unique_trades(posts_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -143,19 +155,6 @@ def filter_unique_trades(posts_data: List[Dict[str, Any]]) -> List[Dict[str, Any
 
     return list(unique_trades.values()) + other_posts
 
-def extract_farm_team(text: str, action: str = "from") -> str:
-    """Точно извлекает полное название фарм-клуба без обрезки слов"""
-    if action == "from":
-        m = re.search(r"from\s+(?:the\s+)?([A-Za-z0-9\s\.\-]+?)(?:\s*\((?:AHL|ECHL|OHL|WHL)\)|[\.\n$])", text, re.I)
-    else:
-        m = re.search(r"(?:to|at)\s+(?:the\s+)?([A-Za-z0-9\s\.\-]+?)(?:\s*\((?:AHL|ECHL|OHL|WHL)\)|[\.\n$])", text, re.I)
-    if m:
-        name = m.group(1).strip()
-        # Очищаем от случайных служебных слов
-        name = re.sub(r"^(loan on|loan to|assignment to)\s+", "", name, flags=re.I)
-        return name
-    return "фарм-клуб"
-
 def build_telegram_post(
     player: str, 
     pos_en: str, 
@@ -175,10 +174,10 @@ def build_telegram_post(
     day = get_day(clean)
     opp = get_opponent(clean)
 
-    # Исправление сбоя парсера (если в названии клуба пришло служебное слово)
-    if team.lower() in ["signing", "injury", "line change", "trade", "call up", "send down", ""]:
+    # Исправление ошибочного клуба в метаданных (Free Agent / служебные слова)
+    if team.lower() in ["signing", "injury", "line change", "trade", "call up", "send down", "waiver move", "free agent", ""]:
         for k, full in TEAMS_CLEAN.items():
-            if f"with the {k}" in low or f"with {k}" in low or f"the {k}" in low:
+            if f"the {k}" in low or f"with the {k}" in low or f"with {k}" in low:
                 team = full
                 break
 
@@ -193,13 +192,13 @@ def build_telegram_post(
     else:
         when_where = ""
 
-    # Скрытие травмы, если игрок играет / подписал контракт / обменян / отправлен в фарм
+    # Скрытие травмы, если игрок играет / подписал контракт / обменян / драфт отказов
     inj = get_injury_type(clean)
     hide_inj = any(k in low for k in [
         "regular jersey", "full participant", "season debut", "will play", 
         "in the lineup", "non-contact", "draw into", "draw back", 
         "return to the lineup", "scratch", "recalled", "assigned", "loaned", "reassigned",
-        "contract", "signed", "deal", "acquired", "trade"
+        "contract", "signed", "deal", "acquired", "trade", "waiver", "claimed"
     ])
     inj_str = f" ({inj})" if inj and not hide_inj else ""
     
@@ -207,31 +206,74 @@ def build_telegram_post(
     prefix = f"{player} ({pos}){inj_str}"
     event_type = "unknown"
 
-    # ==================== 1. КОМБИНИРОВАННЫЕ СТАТУСЫ IR + ОТПРАВКА ====================
-    if "activated from ir" in low and any(k in low for k in ["assigned", "loaned", "reassigned"]):
+    # ==================== 1. ДРАФТ ОТКАЗОВ (WAIVER MOVES) ====================
+    # Вариант 1А: Забор с драфта отказов (Claim) - прямой порядок
+    claim_match_direct = re.search(r"([a-z\s\.\-]+?)\s+(?:has\s+)?(?:claimed|acquired)\s+(.+?)\s+off\s+(?:of\s+)?waivers\s+from\s+(?:the\s+)?([a-z\s\.\-]+?)[\.\s$]", clean, re.I)
+    # Вариант 1Б: Забор с драфта отказов (Claim) - инверсивный порядок: from [Клуб] off waivers
+    claim_match_inv = re.search(r"([a-z\s\.\-]+?)\s+(?:has\s+)?claimed\s+(.+?)\s+from\s+(?:the\s+)?([a-z\s\.\-]+?)\s+(?:off\s+(?:of\s+)?waivers|on\s+[a-z]+)[\.\s$]", clean, re.I)
+
+    if claim_match_direct or claim_match_inv:
+        m = claim_match_direct if claim_match_direct else claim_match_inv
+        who_claimed_raw, who_got, from_c_raw = m.groups()
+        
+        # Определяем настоящий клуб-покупатель и клуб-донор из текста
+        for k, full in TEAMS_CLEAN.items():
+            if k in who_claimed_raw.lower():
+                team = full
+            if k in from_c_raw.lower():
+                from_c_raw = full
+
+        day_str = f" {day}" if day else ""
+        event_type = f"waiver_claim:{from_c_raw.lower()}:{team.lower()}"
+        emoji, act = "📋", f"забран с драфта отказов у «{from_c_raw.strip()}»{day_str}"
+
+    elif "unconditional waivers" in low or ("waivers" in low and "contract termination" in low):
+        event_type = "waiver_unconditional"
+        # Ищем клуб, который выставляет на расторжение (например, The Oilers will be placing...)
+        for k, full in TEAMS_CLEAN.items():
+            if f"the {k}" in low or f"{k} recently" in low or f"{k} will" in low:
+                team = full
+                break
+        day_str = f" {day}" if day else ""
+        emoji, act = "❌", f"выставлен на драфт отказов для расторжения контракта{day_str}"
+
+    elif "cleared waivers" in low and any(k in low for k in ["assigned", "loaned", "reassigned", "report to"]):
+        event_type = "cleared_assigned"
+        dest = extract_farm_team(clean, action="to")
+        # Определяем клуб из текста (Canucks / Abbotsford и т.д.)
+        for k, full in TEAMS_CLEAN.items():
+            if f"the {k}" in low or f"{k} placed" in low:
+                team = full
+                break
+        emoji, act = "⬇️", f"прошёл драфт отказов и отправлен в {dest} (AHL)"
+
+    elif "placed on waivers" in low or "placing" in low and "waivers" in low or "placed" in low and "waivers" in low:
+        event_type = "waiver_placed"
+        for k, full in TEAMS_CLEAN.items():
+            if f"the {k}" in low or f"{k} placed" in low:
+                team = full
+                break
+        day_str = f" {day}" if day else ""
+        emoji, act = "⚠️", f"выставлен на драфт отказов (waivers){day_str}"
+
+    # ==================== 2. КОМБИНИРОВАННЫЕ СТАТУСЫ IR + AHL ====================
+    elif "activated from ir" in low and any(k in low for k in ["assigned", "loaned", "reassigned"]):
         event_type = "ir_activated_assigned"
         dest = extract_farm_team(clean, action="to")
         emoji, act = "✅", f"активирован из списка травмированных и отправлен в {dest} (AHL)"
 
-    # ==================== 2. КОМБИНИРОВАННЫЕ СТАТУСЫ WAIVERS + ОТПРАВКА ====================
-    elif "cleared waivers" in low and any(k in low for k in ["assigned", "loaned", "reassigned"]):
-        event_type = "cleared_assigned"
-        dest = extract_farm_team(clean, action="to")
-        emoji, act = "⬇️", f"прошёл драфт отказов и отправлен в {dest} (AHL)"
-
-    # ==================== 3. ВЫЗОВЫ ИЗ ФАРМ-КЛУБА (CALL UP) ====================
+    # ==================== 3. ВЫЗОВЫ И ОТПРАВКИ (CALL UP / SEND DOWN) ====================
     elif "recalled" in low:
         event_type = "recalled"
         farm = extract_farm_team(clean, action="from")
         emoji, act = "🚀", f"вызван из {farm} (AHL)"
 
-    # ==================== 4. ОТПРАВКИ В ФАРМ-КЛУБ (SEND DOWN) ====================
     elif any(k in low for k in ["assigned", "loaned", "reassigned"]):
         event_type = "assigned"
         dest = extract_farm_team(clean, action="to")
         emoji, act = "⬇️", f"отправлен в {dest} (AHL)"
 
-    # ==================== 5. ОБМЕНЫ (TRADES) ====================
+    # ==================== 4. ОБМЕНЫ (TRADES) ====================
     elif "acquired" in low and ("from" in low or "for" in low):
         event_type = "trade"
         t_match = re.search(r"([a-z\s\.\-]+?)\s+(?:has\s+)?acquired\s+(.+?)\s+from\s+(?:the\s+)?([a-z\s\.\-]+?)\s+for\s+(.+?)[\.\s$]", clean, re.I)
@@ -257,7 +299,7 @@ def build_telegram_post(
         else:
             emoji, act = "🔄", "стал участником обмена"
 
-    # ==================== 6. ПОДПИСАНИЯ КОНТРАКТОВ (SIGNINGS) ====================
+    # ==================== 5. ПОДПИСАНИЯ КОНТРАКТОВ (SIGNINGS) ====================
     elif any(k in low for k in ["contract", "deal", "extension", "signed"]) and "claim" not in low:
         event_type = "signing"
         y_match = re.search(r"(\d+|one|two|three|four|five|six|seven|eight)-year", low)
@@ -281,39 +323,26 @@ def build_telegram_post(
 
         emoji, act = "✍️", f"подписал контракт{years_str}{money_str}".strip()
 
-    # ==================== 7. ДРАФТ ОТКАЗОВ (WAIVERS) ====================
-    elif "claimed" in low and "waiver" in low:
-        event_type = "waiver_claimed"
-        claim_match = re.search(r"claimed\s+(.+?)\s+off (?:of )?waivers from\s+(.+?)[\.\s]", clean, re.I)
-        if claim_match:
-            who, from_c = claim_match.groups()
-            return f"{team}\n📋 Забрали с драфта отказов у «{from_c.strip()}» {who.strip()} ({pos})"
-        emoji, act = "📋", "забран с драфта отказов"
-    elif "unconditional waivers" in low:
-        event_type, emoji, act = "waiver_unconditional", "❌", "выставлен на драфт отказов для расторжения контракта"
-    elif "placed on waivers" in low:
-        event_type, emoji, act = "waiver_placed", "⚠️", "выставлен на драфт отказов (waivers)"
-
-    # ==================== 8. СПИСКИ ТРАВМИРОВАННЫХ (IR) ====================
+    # ==================== 6. СПИСКИ ТРАВМИРОВАННЫХ (IR) ====================
     elif "activated from ir" in low or "activated from injured reserve" in low:
         event_type, emoji, act = "ir_activated", "✅", "активирован из списка травмированных"
     elif "placed on ir" in low or ("placed" in low and "injured reserve" in low):
         event_type, emoji, act = "ir_placed", "🚫", "внесен в список травмированных"
 
-    # ==================== 9. СТАРТОВЫЕ ВРАТАРИ ====================
+    # ==================== 7. СТАРТОВЫЕ ВРАТАРИ ====================
     elif any(x in low for x in ["led the", "first goalie off", "warmup"]):
         event_type, emoji, act = "goalie_probable", "🥅", "вероятно будет стартовым вратарем"
     elif "goalie" in pos_en.lower() and ("start" in low or "onto the ice" in low):
         event_type, emoji, act = "goalie_starter", "🥅", f"станет основным вратарем{when_where}"
 
-    # ==================== 10. РЕШЕНИЕ ПЕРЕД МАТЧЕМ (GTD) ====================
+    # ==================== 8. РЕШЕНИЕ ПЕРЕД МАТЧЕМ (GTD) ====================
     elif "game-time decision" in low or "game time decision" in low:
         event_type = "gtd"
         day_opp = f" {day}{opp_str}".strip() if day else opp_str.strip()
         match_str = f" перед матчем {day_opp}" if day_opp else " перед игрой"
         emoji, act = "🤔", f"Решение по участию будет принято{match_str}"
 
-    # ==================== 11. ТРАВМЫ И СРОКИ ====================
+    # ==================== 9. ТРАВМЫ И СРОКИ ====================
     elif "left" in low and "game" in low and "did not return" in low:
         event_type = "left_game"
         day_str = f" {day}" if day else ""
@@ -326,7 +355,7 @@ def build_telegram_post(
         period = m.group(1).replace("days", "дней").replace("weeks", "недель").replace("months", "месяцев") if m else "неопределенный срок"
         emoji, act = "⚠️", f"пропустит как минимум {period}"
 
-    # ==================== 12. ТРЕНИРОВКИ И РАСКАТКИ ====================
+    # ==================== 10. ТРЕНИРОВКИ И РАСКАТКИ ====================
     elif "non-contact jersey" in low:
         event_type, emoji, act = "practice_noncontact", "🟡", f"тренировался в бесконтактном свитере{f' {day}' if day else ''}"
     elif "full participant" in low or "regular jersey" in low:
@@ -336,7 +365,7 @@ def build_telegram_post(
     elif "missed" in low and "practice" in low:
         event_type, emoji, act = "missed_practice", "➖", f"пропустил тренировку{f' {day}' if day else ''}"
 
-    # ==================== 13. ВЫЕЗДЫ И ВОЗВРАЩЕНИЕ ====================
+    # ==================== 11. ВЫЕЗДЫ И ВОЗВРАЩЕНИЕ ====================
     elif "will travel" in low and "road trip" in low:
         event_type, emoji, act = "travel_trip", "✈️", "отправится с командой на предстоящую выездную серию"
     elif "chance to return" in low or "could return" in low:
@@ -344,7 +373,7 @@ def build_telegram_post(
         target = "к концу недели" if "end of the week" in low else (when_where.strip() if when_where else "в ближайшее время")
         emoji, act = "⏳", f"может вернуться в строй {target}"
 
-    # ==================== 14. ДЕБЮТЫ ====================
+    # ==================== 12. ДЕБЮТЫ ====================
     elif "season debut" in low:
         event_type, emoji, act = "season_debut", "⭐️", f"проведёт свой первый матч в сезоне{when_where}"
     elif "debut" in low:
@@ -354,7 +383,7 @@ def build_telegram_post(
         else:
             emoji, act = "⭐️", f"проведёт свой дебютный матч за клуб{when_where}"
 
-    # ==================== 15. ЗВЕНЬЯ / ЗАПАС / ВОЗВРАЩЕНИЕ ====================
+    # ==================== 13. ЗВЕНЬЯ / ЗАПАС / ВОЗВРАЩЕНИЕ ====================
     elif "scratch" in low:
         event_type, emoji, act = "scratch", "❌", f"останется в запасе{when_where}"
     elif any(k in low for k in ["draw back into", "return to the lineup", "re-enter the lineup", "enter the lineup", "draw into", "draw in"]):
@@ -362,7 +391,7 @@ def build_telegram_post(
     elif ("will play" in low or ("in the" in low and "lineup" in low)) and "will not play" not in low:
         event_type, emoji, act = "will_play", "✅", f"сыграет{when_where}"
 
-    # ==================== 16. НЕ СЫГРАЕТ / OUT / DAY-TO-DAY ====================
+    # ==================== 14. НЕ СЫГРАЕТ / OUT / DAY-TO-DAY ====================
     elif any(k in low for k in ["remain out", "is out", "will not play", "ruled out"]):
         event_type = "out"
         dt = " (day-to-day)" if "day-to-day" in low else ""
@@ -370,7 +399,7 @@ def build_telegram_post(
     elif "day-to-day" in low:
         event_type, emoji, act = "day_to_day", "🚫", "статус day-to-day"
 
-    # ==================== 17. РЕЗЕРВНЫЙ ФОРМАТ ====================
+    # ==================== 15. РЕЗЕРВНЫЙ ФОРМАТ ====================
     else:
         event_type, emoji, act = "fallback", "ℹ️", clean
 
@@ -379,6 +408,8 @@ def build_telegram_post(
         if event_type == "trade" and "acq_team" in locals() and "from_team" in locals():
             clubs = sorted([acq_team.lower(), from_team.lower()])
             dedup_key = f"trade:{clubs[0]}:{clubs[1]}"
+        elif "waiver_claim" in event_type:
+            dedup_key = f"{player.strip().lower()}:{event_type}"
         else:
             dedup_key = f"{player.strip().lower()}:{event_type}"
 
