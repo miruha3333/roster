@@ -1,5 +1,19 @@
+import os
 import re
 from typing import Optional, Set, List, Dict, Any
+
+# Безопасная подгрузка ключа из .env (если файл существует локально)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# Попытка подключить библиотеку OpenAI для AI-контроля постов
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 # 1. Лаконичные обозначения позиций
 SHORT_POSITIONS = {
@@ -72,6 +86,56 @@ NUM_WORDS = {
 
 # Хранилище опубликованных ключей для предотвращения дублей
 SEEN_EVENTS: Set[str] = set()
+
+# Инициализация OpenAI клиента через переменную окружения
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+ai_client = OpenAI(api_key=OPENAI_KEY) if (OpenAI and OPENAI_KEY) else None
+
+AI_SYSTEM_PROMPT = """
+Ты — строгий редактор русскоязычного Telegram-канала о хоккее и НХЛ.
+Тебе дана хоккейная заметка на английском. Твоя задача — извлечь ТОЛЬКО СУТЬ события и вернуть СТРОГО 2 строки:
+
+Строка 1: Полное название команды на английском (например: Los Angeles Kings)
+Строка 2: {Эмодзи} Имя Фамилия (Амплуа на англ: D, C, LW, RW, G) {суть события на русском языке}
+
+Допустимые форматы для строки 2:
+- 🥅 Вратари: станет основным вратарем в [день] против [Соперник] ИЛИ вероятно будет стартовым вратарем
+- ⛔ Травма: не сыграет в [день] против [Соперник]
+- 🟢 Состав: возвращается в состав в [день] против [Соперник]
+- ❌ Запас: останется в запасе в [день]
+- 🚀 Фарм: вызван из [Клуб] (AHL)
+- ⬇️ Фарм: отправлен в [Клуб] (AHL)
+- ✍️ Контракт: подписал контракт на [X] года/лет ($[Сумма])
+
+ВАЖНО:
+1. Выкидывай всю "воду", статистику предыдущих матчей, цитаты, букмекерские коэффициенты (-122 favourites).
+2. Имя хоккеиста и амплуа ВСЕГДА идут первыми в строке 2 сразу после эмодзи!
+3. Если в тексте НЕТ конкретного события по составу (просто общая аналитика/прогноз), верни ровно одно слово: SKIP
+"""
+
+def ai_format_or_filter(player: str, pos: str, team: str, text: str) -> Optional[str]:
+    """Нейросеть-контролер: форматирует текст в 2 строки без воды либо отсекает мусор (SKIP)"""
+    if not ai_client:
+        return None
+
+    try:
+        user_msg = f"Игрок: {player} ({pos})\nКоманда: {team}\nТекст новости:\n{text}"
+        response = ai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": AI_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg}
+            ],
+            temperature=0.1,
+            max_tokens=120
+        )
+        res = response.choices[0].message.content.strip()
+        if "SKIP" in res or res == "SKIP":
+            return None
+        return res
+    except Exception as e:
+        print(f"[AI Controller Error]: {e}")
+        return None
 
 def format_years(years: int) -> str:
     """Возвращает русское склонение для срока контракта"""
@@ -163,27 +227,27 @@ def build_telegram_post(
 ) -> Optional[str]:
     """
     Формирует лаконичный пост для Telegram в строгом едином стиле.
-    Автоматически отсекает длинный аналитический текст, оставляя только суть новости.
+    Автоматически отсекает длинный аналитический текст.
+    При неясном тексте обращается к AI-контролеру.
     """
     pos = SHORT_POSITIONS.get(pos_en, "F")
     
-    # ==================== ЗАЩИТА ОТ ЛИШНЕГО ТЕКСТА ====================
-    # 1. Если случайно передан кусок HTML с тегом <span class="font-bold">, берем только его:
+    # 1. Извлечение только заголовка (если передан HTML со span или текст с \n\n)
     span_match = re.search(r'<span[^>]*class="[^"]*font-bold[^"]*"[^>]*>(.*?)</span>', text, re.I | re.S)
     if span_match:
         clean = re.sub(r'<[^>]+>', '', span_match.group(1)).strip()
     else:
-        # 2. Если передан обычный текст с несколькими абзацами, берем ТОЛЬКО ПЕРВУЮ СТРОКУ (заголовок):
         clean = text.strip().split("\n\n")[0].split("\n")[0].strip()
 
     low = clean.lower()
-    day = get_day(clean)
-    opp = get_opponent(clean)
+    full_low = text.lower()
+    day = get_day(clean) or get_day(text)
+    opp = get_opponent(clean) or get_opponent(text)
 
-    # Исправление ошибочного клуба в метаданных (Free Agent / служебные слова)
+    # Исправление ошибочного клуба в метаданных
     if team.lower() in ["signing", "injury", "line change", "trade", "call up", "send down", "waiver move", "free agent", ""]:
         for k, full in TEAMS_CLEAN.items():
-            if f"the {k}" in low or f"with the {k}" in low or f"with {k}" in low:
+            if f"the {k}" in full_low or f"with the {k}" in full_low or f"with {k}" in full_low:
                 team = full
                 break
 
@@ -198,7 +262,7 @@ def build_telegram_post(
     else:
         when_where = ""
 
-    # Скрытие травмы, если игрок играет / подписал контракт / обменян / драфт отказов
+    # Скрытие травмы, если статус не про травму
     inj = get_injury_type(clean)
     hide_inj = any(k in low for k in [
         "regular jersey", "full participant", "season debut", "will play", 
@@ -208,16 +272,18 @@ def build_telegram_post(
     ])
     inj_str = f" ({inj})" if inj and not hide_inj else ""
     
-    # Имя, фамилия и амплуа ВСЕГДА первыми!
     prefix = f"{player} ({pos}){inj_str}"
     event_type = "unknown"
 
     # ==================== 1. СТАРТОВЫЕ ВРАТАРИ ====================
-    # Ловит "will start", "to start", "confirmed to start", "expected to start", "starter"
-    if "goalie" in pos_en.lower() or "start" in low or "crease" in low or "in net" in low:
+    if "goalie" in pos_en.lower() or "start" in low or "crease" in low or "in net" in low or "goalie" in low:
         if any(x in low for x in ["led the", "first goalie off", "warmup", "starter's crease", "starter crease", "starter at"]):
             event_type, emoji, act = "goalie_probable", "🥅", "вероятно будет стартовым вратарем"
-        elif any(x in low for x in ["start", "starting", "in net", "between the pipes", "onto the ice"]):
+        elif any(x in low for x in [
+            "start", "starting", "in net", "between the pipes", "onto the ice",
+            "return to the crease", "returns to the crease", "back in the crease",
+            "in the crease", "gets the nod", "takes the crease", "confirmed to start"
+        ]):
             event_type, emoji, act = "goalie_starter", "🥅", f"станет основным вратарем{when_where}"
 
     # ==================== 2. ДРАФТ ОТКАЗОВ (WAIVER MOVES) ====================
@@ -227,13 +293,11 @@ def build_telegram_post(
     if (claim_match_direct or claim_match_inv) and event_type == "unknown":
         m = claim_match_direct if claim_match_direct else claim_match_inv
         who_claimed_raw, who_got, from_c_raw = m.groups()
-        
         for k, full in TEAMS_CLEAN.items():
             if k in who_claimed_raw.lower():
                 team = full
             if k in from_c_raw.lower():
                 from_c_raw = full
-
         day_str = f" {day}" if day else ""
         event_type = f"waiver_claim:{from_c_raw.lower()}:{team.lower()}"
         emoji, act = "📋", f"забран с драфта отказов у «{from_c_raw.strip()}»{day_str}"
@@ -241,7 +305,7 @@ def build_telegram_post(
     elif ("unconditional waivers" in low or ("waivers" in low and "contract termination" in low)) and event_type == "unknown":
         event_type = "waiver_unconditional"
         for k, full in TEAMS_CLEAN.items():
-            if f"the {k}" in low or f"{k} recently" in low or f"{k} will" in low:
+            if f"the {k}" in full_low or f"{k} recently" in full_low or f"{k} will" in full_low:
                 team = full
                 break
         day_str = f" {day}" if day else ""
@@ -251,7 +315,7 @@ def build_telegram_post(
         event_type = "cleared_assigned"
         dest = extract_farm_team(clean, action="to")
         for k, full in TEAMS_CLEAN.items():
-            if f"the {k}" in low or f"{k} placed" in low:
+            if f"the {k}" in full_low or f"{k} placed" in full_low:
                 team = full
                 break
         emoji, act = "⬇️", f"прошёл драфт отказов и отправлен в {dest} (AHL)"
@@ -259,7 +323,7 @@ def build_telegram_post(
     elif ("placed on waivers" in low or "placing" in low and "waivers" in low or "placed" in low and "waivers" in low) and event_type == "unknown":
         event_type = "waiver_placed"
         for k, full in TEAMS_CLEAN.items():
-            if f"the {k}" in low or f"{k} placed" in low:
+            if f"the {k}" in full_low or f"{k} placed" in full_low:
                 team = full
                 break
         day_str = f" {day}" if day else ""
@@ -402,9 +466,13 @@ def build_telegram_post(
     elif "day-to-day" in low and event_type == "unknown":
         event_type, emoji, act = "day_to_day", "🚫", "статус day-to-day"
 
-    # ==================== 15. РЕЗЕРВНЫЙ ФОРМАТ ====================
+    # ==================== 15. НЕПОНЯТНЫЙ ТЕКСТ -> ПЕРЕДАЕМ AI-КОНТРОЛЕРУ ====================
     elif event_type == "unknown":
-        event_type, emoji, act = "fallback", "ℹ️", clean
+        ai_post = ai_format_or_filter(player, pos, team, text)
+        if ai_post:
+            return ai_post
+        else:
+            return None
 
     # ==================== УМНАЯ ПРОВЕРКА НА ДУБЛИ ====================
     if check_duplicates:
