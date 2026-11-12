@@ -1,5 +1,5 @@
 import re
-from typing import Optional, Set
+from typing import Optional, Set, List, Dict, Any
 
 # 1. Лаконичные обозначения позиций
 SHORT_POSITIONS = {
@@ -11,7 +11,7 @@ SHORT_POSITIONS = {
     "Goalie": "G", "goalie": "G", "g": "G"
 }
 
-# 2. Полные названия клубов НХЛ и частые алиасы
+# 2. Полные названия клубов НХЛ и алиасы
 TEAMS_CLEAN = {
     "anaheim": "Anaheim Ducks", "ducks": "Anaheim Ducks",
     "boston": "Boston Bruins", "bruins": "Boston Bruins",
@@ -64,7 +64,7 @@ INJURIES_MAP = {
     "skull fracture": "перелом черепа", "maintenance": "плановый отдых"
 }
 
-# 5. Числительные словами для сроков контрактов
+# 5. Числительные словами для контрактов
 NUM_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4,
     "five": 5, "six": 6, "seven": 7, "eight": 8
@@ -74,7 +74,7 @@ NUM_WORDS = {
 SEEN_EVENTS: Set[str] = set()
 
 def format_years(years: int) -> str:
-    """Корректное склонение лет контракта"""
+    """Возвращает русское склонение для срока контракта"""
     if years == 1:
         return "1 год"
     elif 2 <= years <= 4:
@@ -82,16 +82,12 @@ def format_years(years: int) -> str:
     return f"{years} лет"
 
 def clean_trade_assets(text: str) -> str:
-    """Адаптирует активы обмена: драфт-пики, удержание зарплаты, союзы"""
+    """Переводит драфт-пики и условия удержания зарплаты на русский язык"""
     t = text.strip().rstrip(".,")
-    # Драфт-пики с годом: a 2029 2nd Round Pick -> драфт-пик 2-го раунда (2029)
     t = re.sub(r"(?:a\s+)?(\d{4})\s+(\d+)(?:st|nd|rd|th)[-\s]round\s+pick(?:\s*\([^\)]+\))?", r"драфт-пик \2-го раунда (\1)", t, flags=re.I)
-    # Драфт-пики без года: a 2nd-round pick -> драфт-пик 2-го раунда
     t = re.sub(r"(?:a\s+)?(\d+)(?:st|nd|rd|th)[-\s]round\s+pick(?:\s*\([^\)]+\))?", r"драфт-пик \1-го раунда", t, flags=re.I)
-    # Удержание зарплаты
     t = re.sub(r"\((\d+)%\s+(?:retained\s+salary|salary\s+retained)\)", r"(с удержанием \1% зарплаты)", t, flags=re.I)
     t = re.sub(r"\((?:some\s+retained\s+salary|some\s+salary\s+retained)\)", r"(с удержанием части зарплаты)", t, flags=re.I)
-    # Союз "и"
     t = re.sub(r",?\s+and\s+", " и ", t, flags=re.I)
     return t
 
@@ -103,7 +99,7 @@ def get_day(text: str) -> str:
     return ""
 
 def get_opponent(text: str) -> str:
-    """Ищет соперника с учетом опечаток (vs., vs,) и предлогов (in, at, against)"""
+    """Ищет клуб соперника"""
     match = re.search(r"(?:vs[.,]?|against|in|at)\s+(?:the\s+)?([a-z\s\.\-]+)", text, re.I)
     if match:
         raw_opp = match.group(1).lower().strip().rstrip(".,")
@@ -113,12 +109,40 @@ def get_opponent(text: str) -> str:
     return ""
 
 def get_injury_type(text: str) -> str:
-    """Определяет характер травмы"""
+    """Определяет травму"""
     lower = text.lower()
     for en, ru in INJURIES_MAP.items():
         if en in lower:
             return ru
     return ""
+
+def filter_unique_trades(posts_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Вспомогательная функция для парсера:
+    Если с сайта пришло 5 карточек на один и тот же мега-обмен,
+    оставляет только 1 самую полную карточку со всеми участниками.
+    """
+    unique_trades = {}
+    other_posts = []
+
+    for item in posts_data:
+        text_raw = item.get("text", "")
+        text_low = text_raw.lower()
+        if item.get("category") == "Trade" or "acquired" in text_low:
+            clubs = []
+            for k, full in TEAMS_CLEAN.items():
+                if k in text_low and full not in clubs:
+                    clubs.append(full)
+            if len(clubs) >= 2:
+                trade_id = tuple(sorted(clubs[:2]))
+                if trade_id not in unique_trades or len(text_raw) > len(unique_trades[trade_id]["text"]):
+                    unique_trades[trade_id] = item
+            else:
+                other_posts.append(item)
+        else:
+            other_posts.append(item)
+
+    return list(unique_trades.values()) + other_posts
 
 def build_telegram_post(
     player: str, 
@@ -130,11 +154,8 @@ def build_telegram_post(
     check_duplicates: bool = True
 ) -> Optional[str]:
     """
-    Генерирует пост строго по единому формату:
-    {Команда}
-    {Эмодзи} {Игрок} ({Амплуа}){Травма} {Действие / Соперник / Дата}
-
-    Если check_duplicates=True и новость по игроку/событию уже обрабатывалась — возвращает None.
+    Формирует лаконичный пост для Telegram в едином стиле.
+    Возвращает None, если новость оказалась дублем.
     """
     pos = SHORT_POSITIONS.get(pos_en, "F")
     clean = text.strip()
@@ -142,14 +163,14 @@ def build_telegram_post(
     day = get_day(clean)
     opp = get_opponent(clean)
 
-    # Автоисправление названия команды при сбое метаданных
+    # Исправление сбоя парсера (если в названии клуба пришло служебное слово)
     if team.lower() in ["signing", "injury", "line change", "trade", ""]:
         for k, full in TEAMS_CLEAN.items():
             if f"with the {k}" in low or f"with {k}" in low or f"the {k}" in low:
                 team = full
                 break
 
-    # Формирование связки дня и соперника
+    # Связка дня и соперника
     opp_str = f" против {opp}" if opp else ""
     if day and opp:
         when_where = f" {day}{opp_str}"
@@ -160,7 +181,7 @@ def build_telegram_post(
     else:
         when_where = ""
 
-    # Скрытие травмы для здоровых игроков / подписаний / обменов
+    # Скрытие травмы, если игрок играет / подписал контракт / обменян
     inj = get_injury_type(clean)
     hide_inj = any(k in low for k in [
         "regular jersey", "full participant", "season debut", "will play", 
@@ -170,7 +191,7 @@ def build_telegram_post(
     ])
     inj_str = f" ({inj})" if inj and not hide_inj else ""
     
-    # Имя, фамилия и амплуа ВСЕГДА идут первыми
+    # Имя, фамилия и амплуа всегда первыми!
     prefix = f"{player} ({pos}){inj_str}"
     event_type = "unknown"
 
@@ -180,8 +201,6 @@ def build_telegram_post(
         t_match = re.search(r"([a-z\s\.\-]+?)\s+(?:has\s+)?acquired\s+(.+?)\s+from\s+(?:the\s+)?([a-z\s\.\-]+?)\s+for\s+(.+?)[\.\s$]", clean, re.I)
         if t_match:
             acq_raw, got_raw, from_raw, for_raw = t_match.groups()
-            
-            # Определяем полные названия клубов
             acq_team = team
             from_team = "клуба соперника"
             for k, full in TEAMS_CLEAN.items():
@@ -193,11 +212,9 @@ def build_telegram_post(
             got_clean = clean_trade_assets(got_raw)
             for_clean = clean_trade_assets(for_raw)
 
-            # Если игрок входит в число приобретенных
             if player.lower() in got_raw.lower():
                 team = acq_team
                 emoji, act = "🔄", f"выменян у {from_team} в обмен на {for_clean}"
-            # Если игрок отдан в обмен
             else:
                 team = from_team
                 emoji, act = "🔄", f"обменян в {acq_team} на {got_clean}"
@@ -260,7 +277,7 @@ def build_telegram_post(
         league = "AHL" if "ahl" in low or "assigned" in low else "фарм-клуб"
         emoji, act = "⬇️", f"отправлен в {dest} ({league})"
 
-    # ==================== 6. ВРАТАРИ ====================
+    # ==================== 6. СТАРТОВЫЕ ВРАТАРИ ====================
     elif any(x in low for x in ["led the", "first goalie off", "warmup"]):
         event_type, emoji, act = "goalie_probable", "🥅", "вероятно будет стартовым вратарем"
     elif "goalie" in pos_en.lower() and ("start" in low or "onto the ice" in low):
@@ -334,11 +351,18 @@ def build_telegram_post(
     else:
         event_type, emoji, act = "fallback", "ℹ️", clean
 
-    # ==================== ПРОВЕРКА НА ДУБЛИ ====================
+    # ==================== УМНАЯ ПРОВЕРКА НА ДУБЛИ ====================
     if check_duplicates:
-        dedup_key = f"{player.strip().lower()}:{event_type}"
+        # Для ОБМЕНОВ ключ строится по паре клубов (1 сделка = 1 пост в канале)
+        if event_type == "trade" and "acq_team" in locals() and "from_team" in locals():
+            clubs = sorted([acq_team.lower(), from_team.lower()])
+            dedup_key = f"trade:{clubs[0]}:{clubs[1]}"
+        else:
+            # Для травм, звеньев и контрактов — по игроку и событию
+            dedup_key = f"{player.strip().lower()}:{event_type}"
+
         if dedup_key in SEEN_EVENTS:
-            return None
+            return None  # Отсекаем дубликат!
         SEEN_EVENTS.add(dedup_key)
 
     return f"{team}\n{emoji} {prefix} {act}"
