@@ -227,12 +227,11 @@ def build_telegram_post(
 ) -> Optional[str]:
     """
     Формирует лаконичный пост для Telegram в строгом едином стиле.
-    Автоматически отсекает длинный аналитический текст.
-    При неясном тексте обращается к AI-контролеру.
+    ЖЕСТКО ЗАПРЕЩАЕТ длинные простыни текста: если новость не структурирована — возвращает None.
     """
     pos = SHORT_POSITIONS.get(pos_en, "F")
     
-    # 1. Извлечение только заголовка (если передан HTML со span или текст с \n\n)
+    # 1. СТРОГАЯ ОЧИСТКА: берем текст ТОЛЬКО из <span class="font-bold"> или первую строку
     span_match = re.search(r'<span[^>]*class="[^"]*font-bold[^"]*"[^>]*>(.*?)</span>', text, re.I | re.S)
     if span_match:
         clean = re.sub(r'<[^>]+>', '', span_match.group(1)).strip()
@@ -244,7 +243,7 @@ def build_telegram_post(
     day = get_day(clean) or get_day(text)
     opp = get_opponent(clean) or get_opponent(text)
 
-    # Исправление ошибочного клуба в метаданных
+    # Исправление ошибочного клуба в метаданных (Free Agent / служебные слова)
     if team.lower() in ["signing", "injury", "line change", "trade", "call up", "send down", "waiver move", "free agent", ""]:
         for k, full in TEAMS_CLEAN.items():
             if f"the {k}" in full_low or f"with the {k}" in full_low or f"with {k}" in full_low:
@@ -268,7 +267,7 @@ def build_telegram_post(
         "regular jersey", "full participant", "season debut", "will play", 
         "in the lineup", "non-contact", "draw into", "draw back", 
         "return to the lineup", "scratch", "recalled", "assigned", "loaned", "reassigned",
-        "contract", "signed", "deal", "acquired", "trade", "waiver", "claimed", "start"
+        "contract", "signed", "deal", "acquired", "trade", "waiver", "claimed", "start", "crease"
     ])
     inj_str = f" ({inj})" if inj and not hide_inj else ""
     
@@ -276,6 +275,7 @@ def build_telegram_post(
     event_type = "unknown"
 
     # ==================== 1. СТАРТОВЫЕ ВРАТАРИ ====================
+    # Ловит "will start", "to start", "crease", "return to the crease", "gets the nod" и т.д.
     if "goalie" in pos_en.lower() or "start" in low or "crease" in low or "in net" in low or "goalie" in low:
         if any(x in low for x in ["led the", "first goalie off", "warmup", "starter's crease", "starter crease", "starter at"]):
             event_type, emoji, act = "goalie_probable", "🥅", "вероятно будет стартовым вратарем"
@@ -466,13 +466,16 @@ def build_telegram_post(
     elif "day-to-day" in low and event_type == "unknown":
         event_type, emoji, act = "day_to_day", "🚫", "статус day-to-day"
 
-    # ==================== 15. НЕПОНЯТНЫЙ ТЕКСТ -> ПЕРЕДАЕМ AI-КОНТРОЛЕРУ ====================
+    # ==================== 15. НЕПОНЯТНЫЙ ТЕКСТ -> СТРОГИЙ КОНТРОЛЬ ====================
     elif event_type == "unknown":
+        # Пробуем выжать суть через нейросеть
         ai_post = ai_format_or_filter(player, pos, team, text)
         if ai_post:
             return ai_post
-        else:
-            return None
+        
+        # ЕСЛИ ШАБЛОН НЕ НАЙДЕН И AI НЕ СМОГ СФОРМИРОВАТЬ 2 СТРОКИ:
+        # ПОЛНЫЙ ЗАПРЕТ! Никакого вывода сырого текста. Возвращаем None.
+        return None
 
     # ==================== УМНАЯ ПРОВЕРКА НА ДУБЛИ ====================
     if check_duplicates:
