@@ -84,10 +84,9 @@ NUM_WORDS = {
     "five": 5, "six": 6, "seven": 7, "eight": 8
 }
 
-# Хранилище опубликованных ключей для предотвращения дублей
+# Хранилище опубликованных ключей
 SEEN_EVENTS: Set[str] = set()
 
-# Инициализация OpenAI клиента через переменную окружения
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 ai_client = OpenAI(api_key=OPENAI_KEY) if (OpenAI and OPENAI_KEY) else None
 
@@ -95,12 +94,12 @@ AI_SYSTEM_PROMPT = """
 Ты — строгий редактор русскоязычного Telegram-канала о хоккее и НХЛ.
 Тебе дана хоккейная заметка на английском. Твоя задача — извлечь ТОЛЬКО СУТЬ события и вернуть СТРОГО 2 строки:
 
-Строка 1: Полное название команды на английском (например: Los Angeles Kings)
+Строка 1: Полное название команды игрока на английском (например: Vancouver Canucks)
 Строка 2: {Эмодзи} Имя Фамилия (Амплуа на англ: D, C, LW, RW, G) {суть события на русском языке}
 
 Допустимые форматы для строки 2:
-- 🚑 Травма в игре: получил повреждение [день] и досрочно покинул площадку
 - 🥅 Вратари: станет основным вратарем в [день] против [Соперник] ИЛИ вероятно будет стартовым вратарем
+- 🚑 Травма в игре: получил повреждение [день] и досрочно покинул площадку
 - ⛔ Травма: не сыграет в [день] против [Соперник]
 - 🟢 Состав: возвращается в состав в [день] против [Соперник]
 - ❌ Запас: останется в запасе в [день]
@@ -110,8 +109,9 @@ AI_SYSTEM_PROMPT = """
 
 ВАЖНО:
 1. Выкидывай всю "воду", статистику предыдущих матчей, цитаты, букмекерские коэффициенты (-122 favourites).
-2. Имя хоккеиста и амплуа ВСЕГДА идут первыми в строке 2 сразу после эмодзи!
-3. Если в тексте НЕТ конкретного события по составу (просто общая аналитика/прогноз), верни ровно одно слово: SKIP
+2. Не путай команду игрока и команду соперника (после слова against / vs).
+3. Имя хоккеиста и амплуа ВСЕГДА идут первыми в строке 2 сразу после эмодзи!
+4. Если в тексте НЕТ конкретного события по составу, верни ровно одно слово: SKIP
 """
 
 def ai_format_or_filter(player: str, pos: str, team: str, text: str) -> Optional[str]:
@@ -120,7 +120,7 @@ def ai_format_or_filter(player: str, pos: str, team: str, text: str) -> Optional
         return None
 
     try:
-        user_msg = f"Игрок: {player} ({pos})\nКоманда: {team}\nТекст новости:\n{text}"
+        user_msg = f"Игрок: {player} ({pos})\nКоманда из заголовка: {team}\nТекст новости:\n{text}"
         response = ai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -164,10 +164,20 @@ def get_day(text: str) -> str:
     return ""
 
 def get_opponent(text: str) -> str:
-    """Ищет клуб соперника"""
-    match = re.search(r"(?:vs[.,]?|against|in|at)\s+(?:the\s+)?([a-z\s\.\-]+)", text, re.I)
+    """
+    Ищет клуб соперника.
+    Исключен предлог 'at' во избежание путаницы с 'at morning skate'.
+    """
+    # Ищем строго после vs, against или предлога in перед названием города
+    match = re.search(r"(?:vs[.,]?|against)\s+(?:the\s+)?([a-z\s\.\-]+)", text, re.I)
+    if not match:
+        match = re.search(r"\bin\s+(?:the\s+)?([a-z\s\.\-]+)", text, re.I)
+    
     if match:
         raw_opp = match.group(1).lower().strip().rstrip(".,")
+        # Отсекаем ложные срабатывания
+        if any(bad in raw_opp for bad in ["morning skate", "practice", "overtime", "lineup"]):
+            return ""
         for key, full_team in TEAMS_CLEAN.items():
             if key in raw_opp:
                 return full_team
@@ -231,24 +241,34 @@ def build_telegram_post(
     """
     pos = SHORT_POSITIONS.get(pos_en, "F")
     
-    # Извлечение чистого заголовка
-    span_match = re.search(r'<span[^>]*class="[^"]*font-bold[^"]*"[^>]*>(.*?)</span>', text, re.I | re.S)
+    # Нормализуем текст (заменяем типографские апострофы на стандартные)
+    norm_text = text.replace("’", "'").replace("`", "'")
+    
+    # 1. Извлечение только заголовка
+    span_match = re.search(r'<span[^>]*class="[^"]*font-bold[^"]*"[^>]*>(.*?)</span>', norm_text, re.I | re.S)
     if span_match:
         clean = re.sub(r'<[^>]+>', '', span_match.group(1)).strip()
     else:
-        clean = text.strip().split("\n\n")[0].split("\n")[0].strip()
+        clean = norm_text.strip().split("\n\n")[0].split("\n")[0].strip()
 
     low = clean.lower()
-    full_low = text.lower()
-    day = get_day(clean) or get_day(text)
-    opp = get_opponent(clean) or get_opponent(text)
+    full_low = norm_text.lower()
+    day = get_day(clean) or get_day(norm_text)
+    opp = get_opponent(clean) or get_opponent(norm_text)
 
-    # Исправление ошибочного клуба в метаданных
-    if team.lower() in ["signing", "injury", "line change", "trade", "call up", "send down", "waiver move", "free agent", ""]:
+    # Защита от подмены клуба: если у игрока уже есть валидный клуб, не перезаписываем его!
+    if team.lower() in ["signing", "injury", "line change", "trade", "call up", "send down", "waiver move", "goalie start", "free agent", ""]:
         for k, full in TEAMS_CLEAN.items():
+            # Не берем клуб, если он идет после слова against (это соперник!)
+            if f"against the {k}" in full_low or f"against {k}" in full_low or f"vs. {k}" in full_low:
+                continue
             if f"the {k}" in full_low or f"with the {k}" in full_low or f"with {k}" in full_low:
                 team = full
                 break
+
+    # Соперник не может совпадать со своей же командой
+    if opp and team and opp.lower() == team.lower():
+        opp = ""
 
     # Связка дня и соперника
     opp_str = f" против {opp}" if opp else ""
@@ -274,15 +294,14 @@ def build_telegram_post(
     prefix = f"{player} ({pos}){inj_str}"
     event_type = "unknown"
 
-    # ==================== 1. ТРАВМЫ ВО ВРЕМЯ МАТЧА (РАСШИРЕНО) ====================
-    # Ловит: "left Thursday's game", "leaves game", "exited game", "injured during game", "left the ice"
+    # ==================== 1. ТРАВМЫ ВО ВРЕМЯ МАТЧА ====================
     if any(k in low for k in ["left", "leaves", "exited", "exits", "knocked out of"]) and any(g in low for g in ["game", "ice", "match"]):
         event_type = "left_game"
         day_str = f" {day}" if day else ""
         emoji, act = "🚑", f"получил повреждение{day_str} и досрочно покинул площадку"
 
     # ==================== 2. СТАРТОВЫЕ ВРАТАРИ ====================
-    elif "goalie" in pos_en.lower() or "start" in low or "crease" in low or "in net" in low or "goalie" in low:
+    elif "goalie" in pos_en.lower() or any(k in low for k in ["start", "crease", "in net", "pipes"]):
         if any(x in low for x in ["led the", "first goalie off", "warmup", "starter's crease", "starter crease", "starter at"]):
             event_type, emoji, act = "goalie_probable", "🥅", "вероятно будет стартовым вратарем"
         elif any(x in low for x in [
@@ -408,7 +427,7 @@ def build_telegram_post(
     elif ("placed on ir" in low or ("placed" in low and "injured reserve" in low)) and event_type == "unknown":
         event_type, emoji, act = "ir_placed", "🚫", "внесен в список травмированных"
 
-    # ==================== 9. РЕШЕНИЕ ПЕРЕД МАТЧЕМ (GTD) / СОМНИТЕЛЬНО ====================
+    # ==================== 9. РЕШЕНИЕ ПЕРЕД МАТЧЕМ (GTD) ====================
     elif any(k in low for k in ["game-time decision", "game time decision", "questionable", "doubtful", "up in the air"]) and event_type == "unknown":
         event_type = "gtd"
         day_opp = f" {day}{opp_str}".strip() if day else opp_str.strip()
@@ -475,7 +494,7 @@ def build_telegram_post(
 
     # ==================== 17. НЕПОНЯТНЫЙ ТЕКСТ -> СТРОГИЙ КОНТРОЛЬ ====================
     elif event_type == "unknown":
-        ai_post = ai_format_or_filter(player, pos, team, text)
+        ai_post = ai_format_or_filter(player, pos, team, norm_text)
         if ai_post:
             return ai_post
         return None
