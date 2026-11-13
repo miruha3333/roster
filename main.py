@@ -1,5 +1,6 @@
 import time
 import requests
+from datetime import datetime
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
 from database import init_db, generate_hash, is_already_published, mark_as_published
 from templates import build_telegram_post, filter_unique_trades
@@ -36,19 +37,25 @@ def main():
     print("[*] Сканирование DailyFaceoff...")
     raw_news = fetch_player_news()
     
-    # 1. Фильтруем дубли мега-обменов (оставляем 1 самый полный пост на сделку)
+    # 1. Фильтруем дубликаты мега-обменов
     news_list = filter_unique_trades(raw_news)
     print(f"[*] Найдено новостей на странице: {len(news_list)}")
 
-    # Разворачиваем, чтобы старые по времени новости шли первыми, а свежие — последними
-    for item in reversed(news_list):
-        n_hash = generate_hash(item["player"], item["team"], item["text"])
+    today_str = datetime.now().strftime("%Y-%m-%d")
 
-        # Проверка защиты от дубликатов по базе данных
+    # Разворачиваем: старые первыми, свежие последними
+    for item in reversed(news_list):
+        # ЗАЩИТА ОТ ДУБЛЕЙ: для вратарей фиксируем день, чтобы редактирование статьи не создавало дубль
+        if item.get("category") in ["Goalie Start", "Line Change"]:
+            n_hash = generate_hash(item["player"], item["category"], today_str)
+        else:
+            n_hash = generate_hash(item["player"], item["team"], item["text"])
+
+        # Проверка по базе данных
         if is_already_published(n_hash):
             continue
 
-        # Создание публикации по нашим строгим шаблонам
+        # Создание публикации
         post_text = build_telegram_post(
             player=item["player"],
             pos_en=item["position"],
@@ -58,19 +65,18 @@ def main():
             source=item["source"]
         )
 
-        # 2. ПРОВЕРКА: если пост не сформирован (вернулся None/null), пропускаем!
+        # Пропускаем невалидные посты
         if not post_text:
             print(f"[-] Пропущено (не подошло под формат): {item['player']} ({item['category']})")
             continue
 
-        # Публикуем ТОЛЬКО валидные готовые посты
+        # Публикуем
         print(f"[+] Публикация новости: {item['player']} ({item['category']})")
         success = send_telegram_message(post_text)
 
         if success:
             mark_as_published(n_hash, item["player"], item["category"])
-            # Защита от лимитов Telegram (не более 1 сообщения в 2 секунды)
-            time.sleep(2)
+            time.sleep(2)  # Защита от лимитов Telegram
         else:
             print(f"[!] Не удалось опубликовать: {item['player']}")
 
