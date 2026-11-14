@@ -6,8 +6,8 @@ from database import init_db, generate_hash, is_already_published, mark_as_publi
 from templates import build_telegram_post, filter_unique_trades
 from scraper import fetch_player_news
 
-def send_telegram_message(text: str) -> bool:
-    """Отправляет готовый пост в Telegram"""
+def send_telegram_message(text: str, retries: int = 3) -> bool:
+    """Отправляет готовый пост в Telegram с 3 попытками при сбое сети"""
     if not text:
         return False
 
@@ -23,12 +23,17 @@ def send_telegram_message(text: str) -> bool:
         "disable_web_page_preview": True
     }
     
-    try:
-        resp = requests.post(url, json=payload, timeout=10)
-        return resp.status_code == 200
-    except Exception as e:
-        print(f"[!] Сбой отправки в Telegram: {e}")
-        return False
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+            if resp.status_code == 200:
+                return True
+            print(f"[!] Telegram вернул статус {resp.status_code}: {resp.text}")
+        except Exception as e:
+            print(f"[!] Попытка {attempt}/{retries}: сбой связи с Telegram ({e})")
+            time.sleep(2)  # Пауза перед повторной попыткой
+            
+    return False
 
 def main():
     print("[*] Инициализация базы данных...")
@@ -37,7 +42,7 @@ def main():
     print("[*] Сканирование DailyFaceoff...")
     raw_news = fetch_player_news()
     
-    # 1. Фильтруем дубликаты мега-обменов
+    # Фильтруем дубликаты мега-обменов
     news_list = filter_unique_trades(raw_news)
     print(f"[*] Найдено новостей на странице: {len(news_list)}")
 
@@ -45,7 +50,6 @@ def main():
 
     # Разворачиваем: старые первыми, свежие последними
     for item in reversed(news_list):
-        # ЗАЩИТА ОТ ДУБЛЕЙ: для вратарей фиксируем день, чтобы редактирование статьи не создавало дубль
         if item.get("category") in ["Goalie Start", "Line Change"]:
             n_hash = generate_hash(item["player"], item["category"], today_str)
         else:
@@ -65,7 +69,7 @@ def main():
             source=item["source"]
         )
 
-        # Пропускаем невалидные посты
+        # Пропускаем, если шаблон вернул None
         if not post_text:
             print(f"[-] Пропущено (не подошло под формат): {item['player']} ({item['category']})")
             continue
