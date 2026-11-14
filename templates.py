@@ -269,6 +269,11 @@ def build_telegram_post(
     """
     Формирует лаконичный пост для Telegram в строгом едином стиле.
     """
+    # Гарантированная инициализация переменных во избежание UnboundLocalError
+    emoji: str = ""
+    act: str = ""
+    event_type: str = "unknown"
+
     pos = SHORT_POSITIONS.get(pos_en, "F")
     is_goalie = (pos == "G" or "goalie" in pos_en.lower() or category == "Goalie Start")
     
@@ -310,9 +315,7 @@ def build_telegram_post(
         "contract", "signed", "deal", "acquired", "trade", "waiver", "claimed", "start", "crease", "debut", "sent down"
     ])
     inj_str = f" ({inj})" if inj and not hide_inj else ""
-    
     prefix = f"{player} ({pos}){inj_str}"
-    event_type = "unknown"
 
     # ==================== 1. ВОЗВРАЩЕНИЕ ИЗ ТРАВМЫ / АКТИВАЦИЯ ИЗ IR ====================
     if "activated from ir" in low or "activated from injured reserve" in low:
@@ -328,24 +331,23 @@ def build_telegram_post(
             emoji, act = "✅", f"активирован из списка травмированных{when_where}"
 
     # ==================== 2. СТАРТОВЫЕ ВРАТАРИ (МУРАШОВ, ВАСИЛЕВСКИЙ, ДОБЕШ) ====================
-    elif is_goalie:
-        # Утренняя раскатка / первым ушел со льда (Murashov, Vasilevskiy, Daccord)
+    elif is_goalie and (category == "Goalie Start" or any(k in low for k in ["start", "crease", "in net", "pipes", "warmup", "skate", "ice", "off", "first"])):
         if any(x in low for x in [
             "first goalie off", "first off", "off the ice", "starter's crease", 
             "starter crease", "morning skate", "warmup", "led the"
         ]):
             event_type, emoji, act = "goalie_probable", "🥅", f"вероятно будет стартовым вратарем{when_where}"
-        # Точный старт (Dobes, Merilainen)
         elif any(x in low for x in [
             "start", "starting", "in net", "between the pipes", "return to the crease", 
             "returns to the crease", "in the crease", "gets the nod"
         ]):
             event_type, emoji, act = "goalie_starter", "🥅", f"станет основным вратарем{when_where}"
+        elif category == "Goalie Start":
+            event_type, emoji, act = "goalie_probable", "🥅", f"вероятно будет стартовым вратарем{when_where}"
 
     # ==================== 3. СРОКИ ТРАВМЫ (КРАЙДЕР: WILL MISS 6-TO-8 WEEKS) ====================
-    elif any(k in low for k in ["will miss", "miss", "out for"]):
-        # Ищет "6-to-8 weeks", "4-6 weeks", "2 weeks", "3 months"
-        m = re.search(r"(?:will miss|miss|out for)\s+(?:at least\s+)?(?:the next\s+)?(\d+[\-\d\s]*(?:to\s+\d+\s*)?(?:days|weeks|months))", low)
+    elif any(k in low for k in ["will miss", "out for"]):
+        m = re.search(r"(?:will miss|out for)\s+(?:at least\s+)?(?:the next\s+)?(\d+[\-\d\s]*(?:to\s+\d+\s*)?(?:days|weeks|months))", low)
         if m:
             period = m.group(1).replace("days", "дней").replace("weeks", "недель").replace("months", "месяцев").replace("to", "–")
             event_type = "injury_miss_period"
@@ -480,7 +482,7 @@ def build_telegram_post(
     elif "missed" in low and "practice" in low:
         event_type, emoji, act = "missed_practice", "➖", f"пропустил тренировку{f' {day}' if day else ''}"
 
-    # ==================== 13. ЗВЕНЬЯ / ЗАПАС / ВОЗВРАЩЕНИЕ (МЭЙСОН ЛОРЕЙ) ====================
+    # ==================== 13. ЗВЕНЬЯ / ЗАПАС / ВОЗВРАЩЕНИЕ ====================
     elif "scratch" in low or "press box" in low:
         event_type, emoji, act = "scratch", "❌", f"останется в запасе{when_where}"
     elif any(k in low for k in ["draw back into", "return to the lineup", "re-enter the lineup", "enter the lineup", "draw into", "draw in", "slide back into"]):
@@ -488,7 +490,7 @@ def build_telegram_post(
     elif ("will play" in low or ("in the" in low and "lineup" in low)) and "will not play" not in low:
         event_type, emoji, act = "will_play", "✅", f"сыграет{when_where}"
 
-    # ==================== 14. НЕ СЫГРАЕТ / OUT / DAY-TO-DAY ====================
+    # ==================== 14. НЕ СЫГРАЕТ / OUT / DAY-TO-DAY (ИСПРАВЛЕНО!) ====================
     elif any(k in low for k in ["remain out", "is out", "will not play", "ruled out", "sidelined with"]):
         event_type = "out"
         dt = " (day-to-day)" if "day-to-day" in low else ""
@@ -497,7 +499,7 @@ def build_telegram_post(
         event_type, emoji, act = "day_to_day", "🚫", "статус day-to-day"
 
     # ==================== 15. НЕПОНЯТНЫЙ ТЕКСТ -> СТРОГИЙ AI ====================
-    elif event_type == "unknown":
+    if not emoji or not act or event_type == "unknown":
         ai_post = ai_format_or_filter(player, pos, team, clean)
         if ai_post:
             return ai_post
