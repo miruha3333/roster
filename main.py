@@ -2,7 +2,7 @@ import time
 import requests
 from datetime import datetime
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
-from database import init_db, generate_hash, is_already_published, mark_as_published
+from database import init_db, generate_hash, is_already_published, is_post_already_published, mark_as_published
 from templates import build_telegram_post, filter_unique_trades
 from scraper import fetch_player_news
 
@@ -74,12 +74,17 @@ def main():
             print(f"[-] Пропущено (не подошло под формат): {item['player']} ({item['category']})")
             continue
 
+        # Проверка по базе данных на дубликат готового поста
+        if is_post_already_published(post_text):
+            print(f"[-] Пропущено (дубль поста): {item['player']} ({item['category']})")
+            continue
+
         # Публикуем
         print(f"[+] Публикация новости: {item['player']} ({item['category']})")
         success = send_telegram_message(post_text)
 
         if success:
-            mark_as_published(n_hash, item["player"], item["category"])
+            mark_as_published(n_hash, item["player"], item["category"], post_text)
             time.sleep(2)  # Защита от лимитов Telegram
         else:
             print(f"[!] Не удалось опубликовать: {item['player']}")
