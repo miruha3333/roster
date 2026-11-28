@@ -17,16 +17,20 @@ KNOWN_CATEGORIES = [
 ]
 
 
-def _has_all_classes(tag, required_classes: List[str]) -> bool:
-    """Проверяет, что у HTML-элемента присутствуют все нужные CSS-классы."""
-    classes = tag.get("class") or []
-    return all(cls in classes for cls in required_classes)
+def _clean_team_name(raw_team: str) -> str:
+    """Убирает разделители и мобильную аббревиатуру в конце (например, 'Seattle Kraken SEA' -> 'Seattle Kraken')."""
+    if "|" in raw_team:
+        raw_team = raw_team.split("|")[-1]
+    t = raw_team.strip(" |•-")
+    # Срезаем 2-4 заглавные буквы в конце строки (SEA, PHI, NYR, SJS и т.д.)
+    t = re.sub(r"\s+[A-Z]{2,4}$", "", t).strip()
+    return t
 
 
 def _extract_header_info(article) -> tuple[str, str, str, object]:
     """
     Читает строго блок <div class="flex flex-row items-end gap-1">:
-    'Dan Vladar (Goalie) | Philadelphia Flyers' -> (player, position, team, header_div)
+    'Philipp Grubauer (Goalie) ( G ) | Seattle Kraken SEA' -> ('Philipp Grubauer', 'Goalie', 'Seattle Kraken', header_div)
     """
     header_div = article.find(
         "div",
@@ -35,12 +39,22 @@ def _extract_header_info(article) -> tuple[str, str, str, object]:
 
     if header_div:
         raw_header = header_div.get_text(" ", strip=True)
-        m = re.match(r"^(.+?)\s*\(([^)]+)\)\s*\|?\s*(.+)$", raw_header)
-        if m:
-            player = m.group(1).strip()
-            position = m.group(2).strip()
-            team = m.group(3).strip(" |•-")
-            return player, position, team, header_div
+
+        if "|" in raw_header:
+            left_part, right_part = raw_header.split("|", 1)
+            m_left = re.match(r"^(.+?)\s*\(([^)]+)\)", left_part.strip())
+            if m_left:
+                player = m_left.group(1).strip()
+                position = m_left.group(2).strip()
+                team = _clean_team_name(right_part)
+                return player, position, team, header_div
+        else:
+            m = re.match(r"^(.+?)\s*\(([^)]+)\)(?:\s*\([^)]+\))?\s*(.+)$", raw_header)
+            if m:
+                player = m.group(1).strip()
+                position = m.group(2).strip()
+                team = _clean_team_name(m.group(3))
+                return player, position, team, header_div
 
     return "", "", "", header_div
 
@@ -66,7 +80,6 @@ def _extract_bold_headline(article, content_div, header_div, player: str) -> str
     search_root = content_div if content_div else article
 
     for sp in search_root.find_all("span", class_=lambda c: c and "font-bold" in c):
-        # Исключаем жирный текст, который находится внутри шапки игрока
         if header_div and (sp == header_div or sp in header_div.descendants):
             continue
 
@@ -109,23 +122,19 @@ def fetch_player_news() -> List[Dict[str, str]]:
     news_list: List[Dict[str, str]] = []
 
     for article in articles:
-        # 1. Блок <div class="flex flex-row items-end gap-1">
         player, position, team, header_div = _extract_header_info(article)
         if not player or not team:
             continue
 
-        # 2. Контейнер <div class="flex w-full shrink flex-col justify-between gap-2">
         content_div = article.find(
             "div",
             class_=lambda c: c and all(x in c for x in ["flex", "w-full", "shrink", "flex-col", "justify-between", "gap-2"]),
         )
 
-        # 3. Жирный заголовок <span class="font-bold"> (нижний большой текст не трогаем вообще)
         headline = _extract_bold_headline(article, content_div, header_div, player)
         if not headline:
             continue
 
-        # 4. Категория
         category = _extract_category(article, content_div, header_div)
 
         news_list.append(
