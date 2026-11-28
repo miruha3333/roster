@@ -1,5 +1,6 @@
 import os
 import re
+import html
 from typing import Optional, Set, List, Dict, Any
 
 # Безопасная подгрузка ключа из .env (если файл существует локально)
@@ -139,7 +140,12 @@ def ai_format_or_filter(player: str, pos: str, team: str, clean_headline: str) -
         res = response.choices[0].message.content.strip()
         if "SKIP" in res or res == "SKIP":
             return None
-        return res
+        lines = [l.strip() for l in res.split("\n") if l.strip()]
+        if len(lines) >= 2:
+            team_line = html.escape(lines[0], quote=False)
+            body_line = html.escape(lines[1], quote=False)
+            return f"<b>{team_line}</b>\n{body_line}"
+        return None
     except Exception as e:
         print(f"[AI Controller Error]: {e}")
         return None
@@ -217,7 +223,6 @@ def extract_only_bold_line(text: str) -> str:
     """
     ЖЕСТКОЕ ПРАВИЛО:
     Берёт ИСКЛЮЧИТЕЛЬНО жирный заголовок новости.
-    Весь текст аналитики ниже ВЫБРАСЫВАЕТСЯ НАВСЕГДА!
     """
     norm = text.replace("’", "'").replace("`", "'")
     
@@ -254,14 +259,18 @@ def build_telegram_post(
     check_duplicates: bool = True
 ) -> Optional[str]:
     """
-    Формирует лаконичный пост без упоминания клубов-соперников (против ...).
-    Формат:
-    {Команда}
-    {Эмодзи} {Игрок} ({Амплуа}){Травма} {Действие} {День}
+    Формирует лаконичный пост в едином формате:
+    <b>Команда</b>
+    {Эмодзи} {Игрок} ({Амплуа}){Травма} {Текст}
     """
     emoji: str = ""
     act: str = ""
     event_type: str = "unknown"
+
+    # Защита от случайного попадания "( G ) | " или "SEA" в название команды
+    if "|" in team:
+        team = team.split("|")[-1]
+    team = re.sub(r"\s+[A-Z]{2,4}$", "", team.strip(" |•-")).strip()
 
     pos = SHORT_POSITIONS.get(pos_en, "F")
     is_goalie = (pos == "G" or "goalie" in pos_en.lower() or category == "Goalie Start")
@@ -285,7 +294,7 @@ def build_telegram_post(
     inj_str = f" ({inj})" if inj and not hide_inj else ""
     prefix = f"{player} ({pos}){inj_str}"
 
-    # ==================== 1. ШАНС НА ВОЗВРАЩЕНИЕ (ПРОВЕРЯЕМ ДО ВОЗВРАЩЕНИЯ В СОСТАВ) ====================
+    # ==================== 1. ШАНС НА ВОЗВРАЩЕНИЕ ====================
     if "chance to return" in low or "could return" in low:
         event_type = "chance_return"
         target = "к концу недели" if "end of the week" in low else (day if day else "в ближайшее время")
@@ -310,7 +319,7 @@ def build_telegram_post(
     elif ("will play" in low or ("in the" in low and "lineup" in low)) and "will not play" not in low:
         event_type, emoji, act = "will_play", "✅", f"сыграет{day_str}"
 
-    # ==================== 4. СТАРТОВЫЕ ВРАТАРИ (ТОЛЬКО ДЛЯ ВРАТАРЕЙ G!) ====================
+    # ==================== 4. СТАРТОВЫЕ ВРАТАРИ ====================
     elif is_goalie and (category == "Goalie Start" or any(k in low for k in ["start", "crease", "in net", "pipes", "warmup", "skate", "ice", "off", "first"])):
         if any(x in low for x in [
             "starter's crease", "starter crease", "morning skate", "warmup", "first goalie off", "led the"
@@ -476,7 +485,7 @@ def build_telegram_post(
     elif "will travel" in low and "road trip" in low:
         event_type, emoji, act = "travel_trip", "✈️", "отправится с командой на предстоящую выездную серию"
 
-    # ==================== 17. СТРОГИЙ AI (БЕЗ СОПЕРНИКОВ!) ====================
+    # ==================== 17. СТРОГИЙ AI ====================
     if not emoji or not act or event_type == "unknown":
         ai_post = ai_format_or_filter(player, pos, team, clean)
         if ai_post:
@@ -495,4 +504,8 @@ def build_telegram_post(
             return None
         SEEN_EVENTS.add(dedup_key)
 
-    return f"{team}\n{emoji} {prefix} {act}"
+    safe_team = html.escape(team, quote=False)
+    safe_prefix = html.escape(prefix, quote=False)
+    safe_act = html.escape(act, quote=False)
+
+    return f"<b>{safe_team}</b>\n{emoji} {safe_prefix} {safe_act}"
